@@ -661,6 +661,26 @@ static void qw_xwayland_view_handle_map(struct wl_listener *listener, void *data
 static void qw_xwayland_view_handle_unmap(struct wl_listener *listener, void *data) {
     UNUSED(data);
     struct qw_xwayland_view *xwayland_view = wl_container_of(listener, xwayland_view, unmap);
+
+    // Cleanup keyboard shortcuts inhibitor if we have one
+    if (xwayland_view->kb_shortcuts_inhibitor != NULL) {
+        struct qw_keyboard_shortcuts_inhibitor *inhibitor = xwayland_view->kb_shortcuts_inhibitor;
+        struct qw_server *server = xwayland_view->base.server;
+
+        wlr_log(WLR_DEBUG, "Removing XWayland keyboard shortcuts inhibitor on unmap");
+
+        // Notify Python
+        if (server->remove_kb_shortcuts_inhibitor_cb) {
+            server->remove_kb_shortcuts_inhibitor_cb(server->cb_data, inhibitor);
+        }
+
+        // Remove from list and free
+        wl_list_remove(&inhibitor->link);
+        free(inhibitor->wlr_inhibitor); // Free the fake wlr_inhibitor we allocated
+        free(inhibitor);
+        xwayland_view->kb_shortcuts_inhibitor = NULL;
+    }
+
     qw_view_cleanup_borders((struct qw_view *)xwayland_view);
     xwayland_view->base.server->unmanage_view_cb((struct qw_view *)&xwayland_view->base,
                                                  xwayland_view->base.server->cb_data);
@@ -792,6 +812,75 @@ static void qw_xwayland_view_handle_request_skip_taskbar(struct wl_listener *lis
     xwayland_view->base.skip_taskbar = xwayland_view->xwayland_surface->skip_taskbar;
 }
 
+// Handle XWayland keyboard grab requests (e.g., from Parsec in immersive mode)
+// This creates an ephemeral keyboard shortcuts inhibitor for the XWayland surface
+static void qw_xwayland_view_handle_grab_focus(struct wl_listener *listener, void *data) {
+    UNUSED(data);
+    struct qw_xwayland_view *xwayland_view = wl_container_of(listener, xwayland_view, grab_focus);
+    struct qw_server *server = xwayland_view->base.server;
+    struct wlr_xwayland_surface *xwayland_surface = xwayland_view->xwayland_surface;
+
+    if (xwayland_surface->surface == NULL) {
+        return;
+    }
+
+    // If we already have an inhibitor, toggle it off (this is a toggle behavior)
+    if (xwayland_view->kb_shortcuts_inhibitor != NULL) {
+        wlr_log(WLR_DEBUG, "XWayland surface %p released keyboard grab",
+                (void *)xwayland_surface->surface);
+
+        struct qw_keyboard_shortcuts_inhibitor *inhibitor = xwayland_view->kb_shortcuts_inhibitor;
+
+        // Notify Python
+        if (server->remove_kb_shortcuts_inhibitor_cb) {
+            server->remove_kb_shortcuts_inhibitor_cb(server->cb_data, inhibitor);
+        }
+
+        // Remove from list and free
+        wl_list_remove(&inhibitor->link);
+        free(inhibitor->wlr_inhibitor);
+        free(inhibitor);
+        xwayland_view->kb_shortcuts_inhibitor = NULL;
+        return;
+    }
+
+    wlr_log(WLR_DEBUG, "XWayland surface %p requested keyboard grab",
+            (void *)xwayland_surface->surface);
+
+    // Create an on-the-fly inhibitor for this XWayland surface
+    struct qw_keyboard_shortcuts_inhibitor *inhibitor =
+        calloc(1, sizeof(struct qw_keyboard_shortcuts_inhibitor));
+    if (!inhibitor) {
+        wlr_log(WLR_ERROR, "Failed to allocate keyboard shortcuts inhibitor for XWayland");
+        return;
+    }
+
+    inhibitor->server = server;
+
+    // Allocate a fake wlr_inhibitor just for holding surface and active state
+    struct wlr_keyboard_shortcuts_inhibitor_v1 *fake_inhibitor =
+        calloc(1, sizeof(struct wlr_keyboard_shortcuts_inhibitor_v1));
+    if (!fake_inhibitor) {
+        free(inhibitor);
+        wlr_log(WLR_ERROR, "Failed to allocate fake inhibitor for XWayland");
+        return;
+    }
+    fake_inhibitor->surface = xwayland_surface->surface;
+    fake_inhibitor->active = true;
+    inhibitor->wlr_inhibitor = fake_inhibitor;
+
+    wl_list_insert(&server->kb_shortcuts_inhibitors, &inhibitor->link);
+
+    // Store reference for cleanup
+    xwayland_view->kb_shortcuts_inhibitor = inhibitor;
+
+    // Notify Python if callback is set
+    if (server->add_kb_shortcuts_inhibitor_cb) {
+        server->add_kb_shortcuts_inhibitor_cb(server->cb_data, inhibitor,
+                                              xwayland_surface->surface);
+    }
+}
+
 static void qw_xwayland_view_handle_dissociate(struct wl_listener *listener, void *data) {
     UNUSED(data);
     struct qw_xwayland_view *xwayland_view = wl_container_of(listener, xwayland_view, dissociate);
@@ -813,6 +902,7 @@ static void qw_xwayland_view_handle_destroy(struct wl_listener *listener, void *
     wl_list_remove(&xwayland_view->request_above.link);
     wl_list_remove(&xwayland_view->request_below.link);
     wl_list_remove(&xwayland_view->request_skip_taskbar.link);
+    wl_list_remove(&xwayland_view->grab_focus.link);
     qw_view_ftl_manager_handle_destroy(&xwayland_view->base);
     wlr_scene_node_destroy(&xwayland_view->base.content_tree->node);
 
@@ -941,6 +1031,9 @@ void qw_server_xwayland_view_new(struct qw_server *server,
     wl_signal_add(&xwayland_surface->events.request_skip_taskbar,
                   &xwayland_view->request_skip_taskbar);
     xwayland_view->request_skip_taskbar.notify = qw_xwayland_view_handle_request_skip_taskbar;
+
+    wl_signal_add(&xwayland_surface->events.grab_focus, &xwayland_view->grab_focus);
+    xwayland_view->grab_focus.notify = qw_xwayland_view_handle_grab_focus;
 
     // Assign function pointers for base view operations
     xwayland_view->base.get_tree_node = qw_xwayland_view_get_tree_node;
