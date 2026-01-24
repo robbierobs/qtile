@@ -1,0 +1,72 @@
+To implement the `keyboard-shortcuts-inhibit-v1` and `xwayland-keyboard-grab-v1` protocols in Qtile, an engineer will need to bridge the gap between the `wlroots` C library and the Python event loop.
+
+Here is a technical implementation guide for a developer familiar with the Qtile codebase.
+
+---
+
+## 1. Protocol Initialization (C/FFI Layer)
+
+The first step is exposing the necessary `wlroots` managers to the Python layer via CFFI.
+
+* **Files:** `libqtile/backend/wayland/_ffi.py` or the project's C header definitions.
+* **Tasks:**
+* Add definitions for `wlr_keyboard_shortcuts_inhibit_v1_manager`.
+* Add definitions for `wlr_xwayland_keyboard_grab_v1_manager` (crucial for NoMachine/Parsec).
+* Ensure the `new_inhibitor` and `request_activate` signals are mapped to callbacks that the Python `Core` can consume.
+
+
+
+## 2. Manager Integration (Core Layer)
+
+You must instantiate the managers when the Wayland backend starts.
+
+* **File:** `libqtile/backend/wayland/core.py`
+* **Tasks:**
+* In `Core.__init__`, initialize both the native Wayland inhibitor and the XWayland grab manager.
+* Maintain a list or set of active inhibitors tied to specific `Surface` objects.
+* Implement `_on_new_inhibitor` and `_on_xwayland_grab_request` listeners.
+
+
+
+```python
+# Conceptual implementation in core.py
+def _on_new_inhibitor(self, listener, inhibitor):
+    self.active_inhibitors.add(inhibitor)
+    inhibitor.add_listener("destroy", self._on_inhibitor_destroy)
+    # Optional: Change window border color to indicate active grab
+
+```
+
+## 3. Keyboard Event Interception (Input Layer)
+
+This is the most critical logic change. You must bypass the standard key-binding lookup when an inhibitor is active on the focused window.
+
+* **File:** `libqtile/backend/wayland/inputs.py`
+* **Method:** `Keyboard._on_key`
+* **Logic Flow:**
+1. **Identify Focus:** Get the currently focused surface from `self.seat.keyboard_state.focused_surface`.
+2. **Check Inhibition:** Query the `Core` to see if that surface has an active inhibitor.
+3. **The "Escape Hatch":** Implement a hardcoded check for a "Panic" key (e.g., `Super+Shift+Escape`) that *always* processes the shortcut, allowing the user to break out of a frozen VM or remote session.
+4. **Bypass:** If inhibited (and not the escape hatch), call `self.seat.keyboard_notify_key(event)` and `return` immediately without checking `self.grabbed_keys`.
+
+
+
+## 4. State Synchronization
+
+Ensure that when a user switches groups (workspaces), the inhibition state is handled correctly.
+
+* **Scenario:** If a user moves from a NoMachine window to a Terminal, the keyboard shortcuts (like `Mod4+Tab`) must start working again.
+* **Task:** The focus-change logic in `seat.py` or `core.py` must re-evaluate the inhibition status of the newly focused surface.
+
+---
+
+### Summary of Changes for the Engineer
+
+| Component | Responsibility | Technical Requirement |
+| --- | --- | --- |
+| **_ffi.py** | Expose wlroots protocols | Add `wlr_keyboard_shortcuts_inhibit_v1` C definitions |
+| **core.py** | Lifecycle management | Initialize managers; track `active_inhibitors` set |
+| **inputs.py** | Event filtering | Add `if is_inhibited: return` logic to `_on_key` |
+| **XWayland** | Legacy support | Bridge X11 `XGrabKeyboard` to Wayland protocol |
+
+Would you like me to draft a specific **technical requirements document** or a **pull request description** based on these instructions?

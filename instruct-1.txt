@@ -1,0 +1,53 @@
+Here are the engineering instructions for implementing the `keyboard-shortcuts-inhibit` protocol in Qtile's `wayc` branch.
+
+### **Engineering Implementation Plan: Keyboard Shortcuts Inhibit Protocol**
+
+#### **1. Objective**
+Implement the `zwp_keyboard_shortcuts_inhibit_unstable_v1` protocol in the Qtile `wayc` C backend. This will allow clients (specifically remote desktop software like NoMachine, Parsec, and VMs) to request exclusive keyboard input, preventing Qtile from intercepting global shortcuts (e.g., Alt+Tab, mod keys).
+
+#### **2. Context & Prerequisites**
+- **Target Branch:** `wayc` (The new C-based backend reimplementation).
+- **Dependency:** `wlroots` 0.19 (already in use in this branch).
+- **Architectural Note:** Unlike the old Python `pywlroots` binding, the new backend interfaces directly with `wlroots` in C. We should leverage `wlroots` helpers where possible, similar to Sway and Hyprland.
+- **Current Status:** XWayland support is WIP. This implementation must function for both native Wayland surfaces and future XWayland surfaces.
+
+#### **3. Implementation Steps**
+
+**Step 3.1: Register the Protocol Global**
+Locate the compositor/server initialization code in `src/wayc/server.c` (or equivalent).
+- Instantiate the `wlr_keyboard_shortcuts_inhibit_manager_v1` using the appropriate `wlroots` constructor (likely `wlr_keyboard_shortcuts_inhibit_v1_create`).
+- Bind this manager to the `wl_display` so it is advertised to clients.
+
+**Step 3.2: Handle Inhibit Events**
+Implement a listener for the `inhibit` event triggered by the manager.
+- When a client requests an inhibit, create a new inhibitor instance.
+- Store the mapping between the `wl_surface`, the `wl_seat`, and the active inhibitor state.
+- This state should be accessible by the input processing logic.
+
+**Step 3.3: Modify Input Processing Logic**
+Locate the core keyboard input handler in `src/wayc/keyboard.c` (or equivalent).
+- Before processing a key event against Qtile's binding system (checking for `mod` keys, etc.), query the inhibitor state.
+- **Logic Check:**
+  - Is there an active inhibitor for the focused surface?
+  - **Yes:** Skip Qtile's keybinding processing entirely. Forward the raw keycode/event to the client surface.
+  - **No:** Process the key normally (execute Qtile commands).
+- Ensure this check happens *before* any rebinding or modifier masking.
+
+**Step 3.4: Lifecycle Management**
+Implement logic to deactivate/destroy inhibitors:
+- **On Focus Loss:** If the user switches away from the inhibited surface, the inhibitor should automatically be considered inactive or destroyed.
+- **On Surface Destroy:** If the client closes, destroy the inhibitor.
+- **Protocol Events:** Emit the `active` and `inactive` events as required by the Wayland protocol to notify the client of the state change.
+
+**Step 3.5: XWayland Considerations**
+- Since XWayland support is currently WIP, ensure that the surface identification logic used in Step 3.2 is generic enough to handle XWayland surface IDs. The inhibit check should work based on the `wlr_surface` pointer, which `wlroots` abstracts for both XDG and XWayland shells.
+
+#### **4. Testing Strategy**
+1.  **Native Client:** Use `weston-terminal` or a test client that supports the protocol to verify inhibit requests succeed and block Qtile shortcuts.
+2.  **Remote Desktop:** Test with **Parsec** or **NoMachine**. Verify that when the capture window is focused, standard Qtile hotkeys (e.g., `mod+enter`) are passed through to the application instead of spawning a terminal.
+3.  **Edge Cases:** Verify that shortcuts are restored immediately when the window loses focus or is closed.
+
+#### **5. Reference Code**
+- **Sway:** `sway/input/keyboard-shortcuts-inhibit.c` (Look for how they integrate with `wlr_keyboard_shortcuts_inhibit_v1`).
+- **Hyprland:** Similar integration in their input handling code.
+- **wlroots:** `include/wlr/types/wlr_keyboard_shortcuts_inhibit_v1.h`.
