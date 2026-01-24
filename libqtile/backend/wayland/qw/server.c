@@ -731,33 +731,31 @@ static void qw_server_handle_new_kb_shortcuts_inhibitor(struct wl_listener *list
     inhibitor->destroy.notify = qw_server_handle_kb_shortcuts_inhibitor_destroy;
     wl_signal_add(&wlr_inhibitor->events.destroy, &inhibitor->destroy);
 
-    bool already_active = false;
     struct qw_keyboard_shortcuts_inhibitor *existing;
     wl_list_for_each(existing, &server->kb_shortcuts_inhibitors, link) {
         if (existing->wlr_inhibitor->surface == wlr_inhibitor->surface &&
             existing->wlr_inhibitor->active) {
-            already_active = true;
-            break;
+            wlr_log(WLR_DEBUG, "Deactivating existing keyboard shortcuts inhibitor for surface %p",
+                    (void *)wlr_inhibitor->surface);
+            existing->wlr_inhibitor->active = false;
+            if (server->remove_kb_shortcuts_inhibitor_cb) {
+                server->remove_kb_shortcuts_inhibitor_cb(server->cb_data, existing);
+            }
         }
     }
 
-    if (!already_active) {
-        // Activate the inhibitor immediately - this tells the client we're honoring it
-        wlr_keyboard_shortcuts_inhibitor_v1_activate(wlr_inhibitor);
+    // Activate the inhibitor immediately - this tells the client we're honoring it
+    wlr_keyboard_shortcuts_inhibitor_v1_activate(wlr_inhibitor);
 
-        wlr_log(WLR_DEBUG, "Keyboard shortcuts inhibitor activated for surface %p",
-                (void *)wlr_inhibitor->surface);
+    wlr_log(WLR_DEBUG, "Keyboard shortcuts inhibitor activated for surface %p",
+            (void *)wlr_inhibitor->surface);
 
-        if (server->add_kb_shortcuts_inhibitor_cb) {
-            bool added = server->add_kb_shortcuts_inhibitor_cb(server->cb_data, inhibitor,
-                                                               wlr_inhibitor->surface);
-            if (!added) {
-                wlr_log(WLR_ERROR, "Unable to notify Python about keyboard shortcuts inhibitor.");
-            }
+    if (server->add_kb_shortcuts_inhibitor_cb) {
+        bool added = server->add_kb_shortcuts_inhibitor_cb(server->cb_data, inhibitor,
+                                                           wlr_inhibitor->surface);
+        if (!added) {
+            wlr_log(WLR_ERROR, "Unable to notify Python about keyboard shortcuts inhibitor.");
         }
-    } else {
-        wlr_log(WLR_DEBUG, "Keyboard shortcuts inhibitor NOT activated for surface %p (already inhibited)",
-                (void *)wlr_inhibitor->surface);
     }
 }
 
