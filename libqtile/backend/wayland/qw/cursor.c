@@ -6,6 +6,7 @@
 #include "output.h"
 #include "server.h"
 #include "util.h"
+#include "view.h"
 #include "wayland-util.h"
 
 void qw_cursor_destroy(struct qw_cursor *cursor) {
@@ -94,7 +95,19 @@ static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
     // Only apply pointer constraints to real pointer input.
     if (cursor->active_constraint && device != NULL && device->type == WLR_INPUT_DEVICE_POINTER) {
         if (cursor->active_constraint->surface != surface) {
-            return;
+            // If we're not over the surface, we need to calculate the surface local coordinates
+            // manually. This is necessary because if the cursor moves too fast, it may leave the
+            // surface, and we need to constrain it back.
+            bool is_ls, is_sls;
+            struct qw_view *view = qw_view_from_wlr_surface(cursor->active_constraint->surface,
+                                                            &is_ls, &is_sls);
+
+            if (view) {
+                sx = cursor->cursor->x - view->x;
+                sy = cursor->cursor->y - view->y;
+            } else {
+                return;
+            }
         }
 
         double sx_confined, sy_confined;
