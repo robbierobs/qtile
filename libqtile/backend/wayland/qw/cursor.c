@@ -9,6 +9,10 @@
 #include "view.h"
 #include "wayland-util.h"
 
+#if WLR_HAS_XWAYLAND
+#include <wlr/xwayland.h>
+#endif
+
 void qw_cursor_destroy(struct qw_cursor *cursor) {
     wl_list_remove(&cursor->request_set.link);
     wl_list_remove(&cursor->axis.link);
@@ -106,7 +110,19 @@ static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
                 sx = cursor->cursor->x - view->x;
                 sy = cursor->cursor->y - view->y;
             } else {
+#if WLR_HAS_XWAYLAND
+                // Fallback for unmanaged XWayland surfaces (e.g. child windows)
+                struct wlr_xwayland_surface *xsurface =
+                    wlr_xwayland_surface_try_from_wlr_surface(cursor->active_constraint->surface);
+                if (xsurface) {
+                    sx = cursor->cursor->x - xsurface->x;
+                    sy = cursor->cursor->y - xsurface->y;
+                } else {
+                    return;
+                }
+#else
                 return;
+#endif
             }
         }
 
