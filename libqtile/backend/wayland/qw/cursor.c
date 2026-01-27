@@ -6,6 +6,7 @@
 #include "output.h"
 #include "server.h"
 #include "util.h"
+#include "view.h"
 #include "wayland-util.h"
 
 void qw_cursor_destroy(struct qw_cursor *cursor) {
@@ -49,6 +50,44 @@ void qw_cursor_update_pointer_focus(struct qw_cursor *cursor) {
         qw_server_view_at(cursor->server, cursor->cursor->x, cursor->cursor->y, &surface, &sx, &sy);
 
     update_pointer_focus(cursor, surface, sx, sy);
+}
+
+/*
+ * Get the scale factor for pointer constraint coordinate transformation.
+ *
+ * For Xwayland surfaces, returns the output scale since Xwayland operates
+ * at scale 1.0 internally while the compositor layout uses the output scale.
+ * For native Wayland surfaces, returns 1.0 (no transformation needed).
+ */
+static double get_constraint_surface_scale(struct qw_cursor *cursor, struct wlr_surface *surface,
+                                           struct qw_view *view) {
+    double scale = 1.0;
+
+    if (view == NULL || surface == NULL) {
+        return scale;
+    }
+
+#if WLR_HAS_XWAYLAND
+    if (view->view_type == QW_VIEW_XWAYLAND) {
+        struct qw_output *output = qw_view_get_primary_output(view);
+        if (output != NULL && output->wlr_output != NULL) {
+            scale = output->wlr_output->scale;
+        } else {
+            struct wlr_output *wlr_out = wlr_output_layout_output_at(cursor->server->output_layout,
+                                                                     view->x + view->width / 2.0,
+                                                                     view->y + view->height / 2.0);
+            if (wlr_out != NULL) {
+                scale = wlr_out->scale;
+            }
+        }
+        wlr_log(WLR_DEBUG, "Xwayland constraint scale: %.2f", scale);
+    }
+#else
+    (void)cursor;
+    (void)surface;
+#endif
+
+    return scale;
 }
 
 static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
@@ -97,14 +136,23 @@ static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
             return;
         }
 
+        double scale = cursor->constraint_scale;
+        double dx_surface = dx;
+        double dy_surface = dy;
+
+        if (scale > 1.0) {
+            dx_surface = dx / scale;
+            dy_surface = dy / scale;
+        }
+
         double sx_confined, sy_confined;
-        if (!wlr_region_confine(&cursor->confine, sx, sy, sx + dx, sy + dy, &sx_confined,
-                                &sy_confined)) {
+        if (!wlr_region_confine(&cursor->confine, sx, sy, sx + dx_surface, sy + dy_surface,
+                                &sx_confined, &sy_confined)) {
             return;
         }
 
-        dx = sx_confined - sx;
-        dy = sy_confined - sy;
+        dx = (scale > 1.0) ? (sx_confined - sx) * scale : (sx_confined - sx);
+        dy = (scale > 1.0) ? (sy_confined - sy) * scale : (sy_confined - sy);
     }
 
     wlr_cursor_move(cursor->cursor, device, dx, dy);
@@ -420,22 +468,23 @@ static void warp_to_constraint_cursor_hint(struct qw_cursor *cursor) {
     struct wlr_pointer_constraint_v1 *constraint = cursor->active_constraint;
 
     if (constraint->current.cursor_hint.enabled) {
-        double sx = constraint->current.cursor_hint.x;
-        double sy = constraint->current.cursor_hint.y;
+        double hint_sx = constraint->current.cursor_hint.x;
+        double hint_sy = constraint->current.cursor_hint.y;
 
         struct qw_view *view = constraint->surface->data;
         if (!view) {
             return;
         }
 
-        double lx = view->x + sx;
-        double ly = view->y + sy;
+        double scale = cursor->constraint_scale;
+        double lx = view->x + ((scale > 1.0) ? hint_sx * scale : hint_sx);
+        double ly = view->y + ((scale > 1.0) ? hint_sy * scale : hint_sy);
 
         wlr_cursor_warp(cursor->cursor, NULL, lx, ly);
 
         // Warp the pointer as well, so that on the next pointer rebase we don't
         // send an unexpected synthetic motion event to clients.
-        wlr_seat_pointer_warp(constraint->seat, sx, sy);
+        wlr_seat_pointer_warp(constraint->seat, hint_sx, hint_sy);
     }
 }
 
@@ -470,6 +519,10 @@ static void check_constraint_region(struct qw_cursor *cursor) {
     if (view == NULL) {
         return;
     }
+
+    cursor->constraint_scale = get_constraint_surface_scale(cursor, constraint->surface, view);
+    double scale = cursor->constraint_scale;
+
     if (cursor->active_confine_requires_warp && view) {
         cursor->active_confine_requires_warp = false;
 
@@ -478,8 +531,10 @@ static void check_constraint_region(struct qw_cursor *cursor) {
             qw_cursor_update_pointer_focus(cursor);
         }
 
-        double sx = cursor->cursor->x - view->x;
-        double sy = cursor->cursor->y - view->y;
+        double layout_offset_x = cursor->cursor->x - view->x;
+        double layout_offset_y = cursor->cursor->y - view->y;
+        double sx = (scale > 1.0) ? layout_offset_x / scale : layout_offset_x;
+        double sy = (scale > 1.0) ? layout_offset_y / scale : layout_offset_y;
 
         if (!pixman_region32_contains_point(region, floor(sx), floor(sy), NULL)) {
             int nboxes;
@@ -488,7 +543,9 @@ static void check_constraint_region(struct qw_cursor *cursor) {
                 double sx = (boxes[0].x1 + boxes[0].x2) / 2.;
                 double sy = (boxes[0].y1 + boxes[0].y2) / 2.;
 
-                wlr_cursor_warp_closest(cursor->cursor, NULL, sx - view->x, sy - view->y);
+                double warp_x = view->x + ((scale > 1.0) ? sx * scale : sx);
+                double warp_y = view->y + ((scale > 1.0) ? sy * scale : sy);
+                wlr_cursor_warp_closest(cursor->cursor, NULL, warp_x, warp_y);
 
                 qw_cursor_update_pointer_focus(cursor);
             }
@@ -525,6 +582,7 @@ void qw_cursor_constrain_cursor(struct qw_cursor *cursor,
     }
 
     cursor->active_constraint = constraint;
+    cursor->constraint_scale = 1.0;
 
     if (constraint == NULL) {
         wl_list_init(&cursor->constraint_commit.link);

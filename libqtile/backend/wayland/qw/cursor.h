@@ -37,6 +37,15 @@ struct qw_cursor {
     struct wlr_pointer_constraint_v1 *active_constraint;
     bool active_confine_requires_warp;
     pixman_region32_t confine;
+
+    // Scale factor for the active constraint surface.
+    // For Xwayland surfaces at HiDPI, this equals the output scale.
+    // For native Wayland surfaces, this is 1.0.
+    //
+    // Transformation rules:
+    //   surface_coord = layout_offset / constraint_scale
+    //   layout_offset = surface_coord * constraint_scale
+    double constraint_scale;
 };
 
 struct qw_pointer_constraint {
