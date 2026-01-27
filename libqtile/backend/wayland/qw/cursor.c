@@ -115,13 +115,19 @@ static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
                 struct wlr_xwayland_surface *xsurface =
                     wlr_xwayland_surface_try_from_wlr_surface(cursor->active_constraint->surface);
                 if (xsurface) {
-                    double surface_x = xsurface->x;
-                    double surface_y = xsurface->y;
-                    struct wlr_xwayland_surface *parent = xsurface->parent;
-                    while (parent) {
-                        surface_x += parent->x;
-                        surface_y += parent->y;
-                        parent = parent->parent;
+                    double surface_x = 0;
+                    double surface_y = 0;
+                    struct wlr_xwayland_surface *cur = xsurface;
+                    while (cur) {
+                        if (cur->data) {
+                            struct qw_view *view = (struct qw_view *)cur->data;
+                            surface_x += view->x;
+                            surface_y += view->y;
+                            break;
+                        }
+                        surface_x += cur->x;
+                        surface_y += cur->y;
+                        cur = cur->parent;
                     }
                     sx = cursor->cursor->x - surface_x;
                     sy = cursor->cursor->y - surface_y;
