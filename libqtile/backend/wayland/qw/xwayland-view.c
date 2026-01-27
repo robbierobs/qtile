@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <wlr/types/wlr_output_layout.h>
 #include <wlr/xwayland.h>
 #include <xcb/xcb_icccm.h>
 
@@ -19,6 +20,17 @@ static void qw_xwayland_view_activate(struct qw_xwayland_view *xwayland_view, bo
     wlr_xwayland_surface_activate(xwayland_view->xwayland_surface, activate);
     if (xwayland_view->base.ftl_handle != NULL) {
         wlr_foreign_toplevel_handle_v1_set_activated(xwayland_view->base.ftl_handle, activate);
+    }
+}
+
+static void update_xwayland_scale_override(struct qw_xwayland_view *xwayland_view) {
+    struct qw_view *view = &xwayland_view->base;
+    struct wlr_output *output =
+        wlr_output_layout_output_at(view->server->output_layout, view->x, view->y);
+    if (output) {
+        view->scale_override = output->scale;
+    } else {
+        view->scale_override = 1.0;
     }
 }
 
@@ -327,6 +339,8 @@ static void qw_xwayland_view_place(void *self, int x, int y, int width, int heig
     xwayland_view->base.width = width;
     xwayland_view->base.height = height;
 
+    update_xwayland_scale_override(xwayland_view);
+
     // Set position of the content scene node
     wlr_scene_node_set_position(&xwayland_view->base.content_tree->node, x, y);
 
@@ -603,6 +617,8 @@ static void qw_xwayland_view_handle_map(struct wl_listener *listener, void *data
     xwayland_view->base.role = xwayland_surface->role;
 
     xwayland_view->base.skip_taskbar = xwayland_surface->skip_taskbar;
+
+    update_xwayland_scale_override(xwayland_view);
 
     // Create foreign toplevel manager and listeners
     if (xwayland_view->base.ftl_handle == NULL) {

@@ -6,6 +6,7 @@
 #include "output.h"
 #include "server.h"
 #include "util.h"
+#include "view.h"
 #include "wayland-util.h"
 
 void qw_cursor_destroy(struct qw_cursor *cursor) {
@@ -97,14 +98,20 @@ static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
             return;
         }
 
+        double confine_sx = sx;
+        double confine_sy = sy;
+        if (cursor->view) {
+            confine_sx = cursor->cursor->x - cursor->view->x;
+            confine_sy = cursor->cursor->y - cursor->view->y;
+        }
         double sx_confined, sy_confined;
-        if (!wlr_region_confine(&cursor->confine, sx, sy, sx + dx, sy + dy, &sx_confined,
-                                &sy_confined)) {
+        if (!wlr_region_confine(&cursor->confine, confine_sx, confine_sy, confine_sx + dx,
+                                confine_sy + dy, &sx_confined, &sy_confined)) {
             return;
         }
 
-        dx = sx_confined - sx;
-        dy = sy_confined - sy;
+        dx = sx_confined - confine_sx;
+        dy = sy_confined - confine_sy;
     }
 
     wlr_cursor_move(cursor->cursor, device, dx, dy);
@@ -420,22 +427,39 @@ static void warp_to_constraint_cursor_hint(struct qw_cursor *cursor) {
     struct wlr_pointer_constraint_v1 *constraint = cursor->active_constraint;
 
     if (constraint->current.cursor_hint.enabled) {
-        double sx = constraint->current.cursor_hint.x;
-        double sy = constraint->current.cursor_hint.y;
+        double hint_x = constraint->current.cursor_hint.x;
+        double hint_y = constraint->current.cursor_hint.y;
 
         struct qw_view *view = constraint->surface->data;
         if (!view) {
             return;
         }
 
-        double lx = view->x + sx;
-        double ly = view->y + sy;
+        double scale = qw_view_get_scale_override(view);
+        double lx = view->x + (hint_x / scale);
+        double ly = view->y + (hint_y / scale);
 
         wlr_cursor_warp(cursor->cursor, NULL, lx, ly);
 
         // Warp the pointer as well, so that on the next pointer rebase we don't
         // send an unexpected synthetic motion event to clients.
-        wlr_seat_pointer_warp(constraint->seat, sx, sy);
+        wlr_seat_pointer_warp(constraint->seat, hint_x, hint_y);
+    }
+}
+
+static void scale_pixman_region(pixman_region32_t *dst, pixman_region32_t *src, double scale) {
+    int n_rects;
+    pixman_box32_t *rects = pixman_region32_rectangles(src, &n_rects);
+
+    if (scale <= 0.0) {
+        scale = 1.0;
+    }
+
+    pixman_region32_clear(dst);
+    for (int i = 0; i < n_rects; i++) {
+        pixman_region32_union_rect(dst, dst, (int)(rects[i].x1 / scale), (int)(rects[i].y1 / scale),
+                                   (int)((rects[i].x2 - rects[i].x1) / scale),
+                                   (int)((rects[i].y2 - rects[i].y1) / scale));
     }
 }
 
@@ -478,8 +502,9 @@ static void check_constraint_region(struct qw_cursor *cursor) {
             qw_cursor_update_pointer_focus(cursor);
         }
 
-        double sx = cursor->cursor->x - view->x;
-        double sy = cursor->cursor->y - view->y;
+        double scale = qw_view_get_scale_override(view);
+        double sx = (cursor->cursor->x - view->x) * scale;
+        double sy = (cursor->cursor->y - view->y) * scale;
 
         if (!pixman_region32_contains_point(region, floor(sx), floor(sy), NULL)) {
             int nboxes;
@@ -487,8 +512,10 @@ static void check_constraint_region(struct qw_cursor *cursor) {
             if (nboxes > 0) {
                 double sx = (boxes[0].x1 + boxes[0].x2) / 2.;
                 double sy = (boxes[0].y1 + boxes[0].y2) / 2.;
+                double lx = view->x + (sx / scale);
+                double ly = view->y + (sy / scale);
 
-                wlr_cursor_warp_closest(cursor->cursor, NULL, sx - view->x, sy - view->y);
+                wlr_cursor_warp_closest(cursor->cursor, NULL, lx, ly);
 
                 qw_cursor_update_pointer_focus(cursor);
             }
@@ -497,7 +524,8 @@ static void check_constraint_region(struct qw_cursor *cursor) {
 
     // A locked pointer will result in an empty region, thus disallowing all movement
     if (constraint->type == WLR_POINTER_CONSTRAINT_V1_CONFINED) {
-        pixman_region32_copy(&cursor->confine, region);
+        double scale = qw_view_get_scale_override(view);
+        scale_pixman_region(&cursor->confine, region, scale);
     } else {
         pixman_region32_clear(&cursor->confine);
     }

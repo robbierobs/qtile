@@ -75,7 +75,8 @@ struct qw_view {
     int y;
     int width;
     int height;
-    int border_count; // Number of border layers
+    double scale_override; // Output scale for Xwayland, 1.0 for native Wayland
+    int border_count;      // Number of border layers
     enum qw_view_state state;
     enum qw_view_type view_type;
     char *shell; // e.g. "XdgWindow" or "XWayland"
@@ -154,5 +155,7 @@ void qw_view_ftl_manager_handle_destroy(struct qw_view *view);
 void qw_view_resize_ftl_output_tracking_buffer(struct qw_view *view, int width, int height);
 
 struct qw_output *qw_view_get_primary_output(struct qw_view *view);
+
+double qw_view_get_scale_override(struct qw_view *view);
 
 #endif /* VIEW_H */

@@ -339,6 +339,7 @@ void qw_view_resize_ftl_output_tracking_buffer(struct qw_view *view, int width, 
 
 void qw_view_ftl_manager_handle_create(struct qw_view *view) {
     // Create a foreign toplevel handle and set up listeners
+    view->scale_override = 1.0;
     view->ftl_handle = wlr_foreign_toplevel_handle_v1_create(view->server->ftl_mgr);
 
     view->ftl_request_activate.notify = qw_handle_ftl_request_activate;
@@ -426,4 +427,8 @@ struct qw_output *qw_view_get_primary_output(struct qw_view *view) {
     }
 
     return primary_output->data;
+}
+
+double qw_view_get_scale_override(struct qw_view *view) {
+    return view->scale_override > 0 ? view->scale_override : 1.0;
 }
