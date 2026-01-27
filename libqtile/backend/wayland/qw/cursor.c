@@ -102,41 +102,46 @@ static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
             // If we're not over the surface, we need to calculate the surface local coordinates
             // manually. This is necessary because if the cursor moves too fast, it may leave the
             // surface, and we need to constrain it back.
-            bool is_ls, is_sls;
-            struct qw_view *view = qw_view_from_wlr_surface(cursor->active_constraint->surface,
-                                                            &is_ls, &is_sls);
+            bool calculated = false;
 
-            if (view) {
-                sx = cursor->cursor->x - view->x;
-                sy = cursor->cursor->y - view->y;
-            } else {
 #if WLR_HAS_XWAYLAND
-                // Fallback for unmanaged XWayland surfaces (e.g. child windows)
-                struct wlr_xwayland_surface *xsurface =
-                    wlr_xwayland_surface_try_from_wlr_surface(cursor->active_constraint->surface);
-                if (xsurface) {
-                    double surface_x = 0;
-                    double surface_y = 0;
-                    struct wlr_xwayland_surface *cur = xsurface;
-                    while (cur) {
-                        if (cur->data) {
-                            struct qw_view *view = (struct qw_view *)cur->data;
-                            surface_x += view->x;
-                            surface_y += view->y;
-                            break;
-                        }
-                        surface_x += cur->x;
-                        surface_y += cur->y;
-                        cur = cur->parent;
+            // Special handling for XWayland surfaces to handle hierarchy and override_redirect
+            struct wlr_xwayland_surface *xsurface =
+                wlr_xwayland_surface_try_from_wlr_surface(cursor->active_constraint->surface);
+            if (xsurface) {
+                double surface_x = 0;
+                double surface_y = 0;
+                struct wlr_xwayland_surface *cur = xsurface;
+                while (cur) {
+                    if (cur->data && !cur->override_redirect) {
+                        struct qw_view *view = (struct qw_view *)cur->data;
+                        surface_x += view->x;
+                        surface_y += view->y;
+                        break;
                     }
-                    sx = cursor->cursor->x - surface_x;
-                    sy = cursor->cursor->y - surface_y;
-                } else {
-                    return;
+                    surface_x += cur->x;
+                    surface_y += cur->y;
+                    cur = cur->parent;
                 }
-#else
-                return;
+                sx = cursor->cursor->x - surface_x;
+                sy = cursor->cursor->y - surface_y;
+                calculated = true;
+            }
 #endif
+
+            if (!calculated) {
+                bool is_ls, is_sls;
+                struct qw_view *view = qw_view_from_wlr_surface(cursor->active_constraint->surface,
+                                                                &is_ls, &is_sls);
+                if (view) {
+                    sx = cursor->cursor->x - view->x;
+                    sy = cursor->cursor->y - view->y;
+                    calculated = true;
+                }
+            }
+
+            if (!calculated) {
+                return;
             }
         }
 
@@ -539,11 +544,7 @@ static void check_constraint_region(struct qw_cursor *cursor) {
     }
 
     // A locked pointer will result in an empty region, thus disallowing all movement
-    if (constraint->type == WLR_POINTER_CONSTRAINT_V1_CONFINED) {
-        pixman_region32_copy(&cursor->confine, region);
-    } else {
-        pixman_region32_clear(&cursor->confine);
-    }
+    pixman_region32_copy(&cursor->confine, region);
 }
 
 static void qw_cursor_handle_constraint_commit(struct wl_listener *listener, void *data) {
