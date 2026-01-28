@@ -38,6 +38,15 @@ struct qw_cursor {
     bool active_confine_requires_warp;
     pixman_region32_t confine;
 
+    // Hint tracking for snap-back prevention.
+    // The cursor_position_hint is often set to the initial cursor position
+    // at constraint activation and never updated during drag operations.
+    // If we always warp to hint on release, the cursor snaps back.
+    // Solution: Track if hint was explicitly updated AFTER activation.
+    double hint_at_activation_x;
+    double hint_at_activation_y;
+    bool hint_was_updated;
+
     // Scale factor for the active constraint surface.
     // For Xwayland surfaces at HiDPI, this equals the output scale.
     // For native Wayland surfaces, this is 1.0.

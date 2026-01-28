@@ -468,11 +468,26 @@ static void warp_to_constraint_cursor_hint(struct qw_cursor *cursor) {
     struct wlr_pointer_constraint_v1 *constraint = cursor->active_constraint;
 
     if (constraint->current.cursor_hint.enabled) {
+        // FIX: Only warp if hint was explicitly updated after activation.
+        // The protocol says compositor "MAY" warp to hint - it's optional.
+        // We skip warp if hint hasn't changed since activation to prevent
+        // snap-back when Xwayland sets initial hint but never updates it.
+        if (!cursor->hint_was_updated) {
+            wlr_log(WLR_DEBUG,
+                    "[CONSTRAINT] Skipping warp - hint was not updated since activation");
+            wlr_log(WLR_DEBUG, "[CONSTRAINT] Current cursor: (%.1f, %.1f)", cursor->cursor->x,
+                    cursor->cursor->y);
+            wlr_log(WLR_DEBUG, "[CONSTRAINT] Stale hint would warp to: (%.1f, %.1f)",
+                    constraint->current.cursor_hint.x, constraint->current.cursor_hint.y);
+            return; // Don't warp - prevents snap-back
+        }
+
         double hint_sx = constraint->current.cursor_hint.x;
         double hint_sy = constraint->current.cursor_hint.y;
 
         struct qw_view *view = constraint->surface->data;
         if (!view) {
+            wlr_log(WLR_ERROR, "[CONSTRAINT] No view for surface - cannot warp");
             return;
         }
 
@@ -480,11 +495,36 @@ static void warp_to_constraint_cursor_hint(struct qw_cursor *cursor) {
         double lx = view->x + ((scale > 1.0) ? hint_sx * scale : hint_sx);
         double ly = view->y + ((scale > 1.0) ? hint_sy * scale : hint_sy);
 
+        wlr_log(WLR_INFO,
+                "[CONSTRAINT] Warping to updated hint: (%.1f, %.1f) -> layout (%.1f, %.1f)",
+                hint_sx, hint_sy, lx, ly);
+
         wlr_cursor_warp(cursor->cursor, NULL, lx, ly);
 
-        // Warp the pointer as well, so that on the next pointer rebase we don't
-        // send an unexpected synthetic motion event to clients.
         wlr_seat_pointer_warp(constraint->seat, hint_sx, hint_sy);
+    } else {
+        wlr_log(WLR_DEBUG, "[CONSTRAINT] Hint not enabled - no warp");
+    }
+}
+
+// Check if cursor_position_hint changed since constraint activation.
+static void check_hint_updated(struct qw_cursor *cursor) {
+    struct wlr_pointer_constraint_v1 *constraint = cursor->active_constraint;
+    if (!constraint || !constraint->current.cursor_hint.enabled) {
+        return;
+    }
+
+    double current_x = constraint->current.cursor_hint.x;
+    double current_y = constraint->current.cursor_hint.y;
+
+    // Check if hint changed from initial value
+    if (current_x != cursor->hint_at_activation_x || current_y != cursor->hint_at_activation_y) {
+        if (!cursor->hint_was_updated) {
+            wlr_log(WLR_DEBUG, "[CONSTRAINT] Hint UPDATED: (%.1f,%.1f) -> (%.1f,%.1f)",
+                    cursor->hint_at_activation_x, cursor->hint_at_activation_y, current_x,
+                    current_y);
+        }
+        cursor->hint_was_updated = true;
     }
 }
 
@@ -564,6 +604,9 @@ static void qw_cursor_handle_constraint_commit(struct wl_listener *listener, voi
     UNUSED(data);
     struct qw_cursor *cursor = wl_container_of(listener, cursor, constraint_commit);
 
+    // Check if hint was updated
+    check_hint_updated(cursor);
+
     check_constraint_region(cursor);
 }
 
@@ -583,6 +626,17 @@ void qw_cursor_constrain_cursor(struct qw_cursor *cursor,
 
     cursor->active_constraint = constraint;
     cursor->constraint_scale = 1.0;
+
+    // Save initial hint value for tracking updates
+    if (constraint != NULL && constraint->current.cursor_hint.enabled) {
+        cursor->hint_at_activation_x = constraint->current.cursor_hint.x;
+        cursor->hint_at_activation_y = constraint->current.cursor_hint.y;
+        cursor->hint_was_updated = false;
+        wlr_log(WLR_DEBUG, "[CONSTRAINT] Activated with hint: (%.1f, %.1f)",
+                cursor->hint_at_activation_x, cursor->hint_at_activation_y);
+    } else {
+        cursor->hint_was_updated = false;
+    }
 
     if (constraint == NULL) {
         wl_list_init(&cursor->constraint_commit.link);
