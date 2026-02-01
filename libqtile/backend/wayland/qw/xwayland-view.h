@@ -17,6 +17,14 @@ struct qw_xwayland_view {
     struct wlr_box geom;
     struct wlr_xwayland_surface *xwayland_surface;
     bool initial_commit;
+
+    // Configure deduplication - track last sent integer coordinates
+    // X11 uses integers, so we skip redundant configures when only
+    // sub-pixel changes occur (fixes Sway issue #5035)
+    int last_configure_x;
+    int last_configure_y;
+    int last_configure_w;
+    int last_configure_h;
     struct qw_keyboard_shortcuts_inhibitor *kb_shortcuts_inhibitor; // Tracked for cleanup
 
     // Listeners for various XWayland surface events and requests

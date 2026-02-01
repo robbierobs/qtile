@@ -14,8 +14,11 @@ description = "A pure-Python tiling window manager."
 requires-python = ">=3.12"
 dynamic = ["version", "readme"]
 dependencies = [
+    "asyncio>=4.0.0",
     "cairocffi >= 1.7.0",
     "cffi >= 1.1.0",
+    "qtile-bonsai>=0.6.0",
+    "qtile-extras>=0.34.1",
     "xcffib >= 1.4.0",
 ]
 license = "MIT"
