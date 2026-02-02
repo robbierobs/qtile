@@ -54,6 +54,9 @@ void qw_cursor_update_pointer_focus(struct qw_cursor *cursor) {
 static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
                                      struct wlr_input_device *device, double dx, double dy,
                                      double dx_unaccel, double dy_unaccel) {
+    UNUSED(dx_unaccel);  // Now sent directly in motion handlers
+    UNUSED(dy_unaccel);  // Now sent directly in motion handlers
+
     struct wlr_seat *seat = cursor->server->seat;
 
     // Handle motion if server is in a locked state
@@ -70,7 +73,7 @@ static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
             // Update pointer focus to the lock surface
             wlr_seat_pointer_notify_enter(seat, lock_surface->surface, sx, sy);
             wlr_seat_pointer_notify_motion(seat, time, sx, sy);
-            cursor->view = NULL; // No normal view under cursor
+            cursor->view = NULL;  // No normal view under cursor
         } else {
             // No lock surface available, clear pointer focus
             wlr_seat_pointer_clear_focus(seat);
@@ -82,9 +85,9 @@ static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
         return;
     }
 
-    wlr_relative_pointer_manager_v1_send_relative_motion(
-        cursor->server->relative_pointer_manager, cursor->server->seat, (uint64_t)time * 1000, dx,
-        dy, dx_unaccel, dy_unaccel);
+    // NOTE: Relative pointer motion is now sent in the motion handlers
+    // BEFORE calling this function, so we don't duplicate it here.
+    // This ensures relative motion is ALWAYS sent, even during implicit grab.
 
     struct wlr_surface *surface = NULL;
     double sx = 0.0, sy = 0.0;
@@ -123,22 +126,93 @@ static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
     }
 }
 
+// ============================================================================
+// OPTION A FIX: Dynamic coordinate tracking for implicit grab
+// Instead of storing a fixed offset, we store the absolute positions at
+// grab start and calculate surface-local coords as:
+//   sx = grab_sx + (cursor_x - grab_cursor_x)
+// This is more robust when XWayland surfaces move during a grab.
+// ============================================================================
 static void qw_cursor_implicit_grab_motion(struct qw_cursor *cursor, uint32_t time,
                                            struct wlr_input_device *device, double dx, double dy) {
     struct wlr_seat *seat = cursor->server->seat;
 
-    double sx = cursor->cursor->x + cursor->implicit_grab.start_dx;
-    double sy = cursor->cursor->y + cursor->implicit_grab.start_dy;
+    // Check for pointer lock - if locked, don't move cursor at all
+    if (cursor->active_constraint && device != NULL &&
+        device->type == WLR_INPUT_DEVICE_POINTER) {
+
+        if (cursor->active_constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED) {
+            // Pointer is locked - notify with current seat coordinates, don't move cursor
+            wlr_seat_pointer_notify_motion(seat, time, seat->pointer_state.sx,
+                                           seat->pointer_state.sy);
+            cursor->server->cursor_motion_cb(cursor->server->cb_data);
+            return;
+        }
+
+        // Check for confine constraint - restrict motion to region
+        if (cursor->active_constraint->type == WLR_POINTER_CONSTRAINT_V1_CONFINED) {
+            // Calculate where cursor would be after move
+            double new_cursor_x = cursor->cursor->x + dx;
+            double new_cursor_y = cursor->cursor->y + dy;
+
+            // Calculate resulting surface-local position
+            double new_sx = cursor->implicit_grab.grab_sx + 
+                           (new_cursor_x - cursor->implicit_grab.grab_cursor_x);
+            double new_sy = cursor->implicit_grab.grab_sy + 
+                           (new_cursor_y - cursor->implicit_grab.grab_cursor_y);
+
+            // Current surface-local position
+            double cur_sx = cursor->implicit_grab.grab_sx + 
+                           (cursor->cursor->x - cursor->implicit_grab.grab_cursor_x);
+            double cur_sy = cursor->implicit_grab.grab_sy + 
+                           (cursor->cursor->y - cursor->implicit_grab.grab_cursor_y);
+
+            double sx_confined, sy_confined;
+            if (!wlr_region_confine(&cursor->confine, cur_sx, cur_sy, new_sx, new_sy,
+                                    &sx_confined, &sy_confined)) {
+                return;  // Motion would leave confine region
+            }
+            // Adjust delta to stay within confined region
+            dx = sx_confined - cur_sx;
+            dy = sy_confined - cur_sy;
+        }
+    }
+
+    // Move cursor FIRST
     wlr_cursor_move(cursor->cursor, device, dx, dy);
+
+    // Update drag icon position
+    wlr_scene_node_set_position(&cursor->server->drag_icon->node, (int)cursor->cursor->x,
+                                (int)cursor->cursor->y);
+
+    // Notify Python of cursor motion for UI updates
+    cursor->server->cursor_motion_cb(cursor->server->cb_data);
+
+    // OPTION A FIX: Calculate surface-local coordinates based on cursor delta from grab start
+    // This ensures coordinates track correctly even if the surface moves
+    double sx = cursor->implicit_grab.grab_sx + 
+               (cursor->cursor->x - cursor->implicit_grab.grab_cursor_x);
+    double sy = cursor->implicit_grab.grab_sy + 
+               (cursor->cursor->y - cursor->implicit_grab.grab_cursor_y);
+
+    // Send pointer motion to the grabbed surface
     wlr_seat_pointer_notify_motion(seat, time, sx, sy);
 }
 
+// ============================================================================
+// FIX #1: Always send relative pointer motion, regardless of grab state
+// ============================================================================
 static void qw_cursor_handle_motion(struct wl_listener *listener, void *data) {
-    // Handle relative pointer motion event
     struct qw_cursor *cursor = wl_container_of(listener, cursor, motion);
     struct wlr_pointer_motion_event *event = data;
 
     qw_server_idle_notify_activity(cursor->server);
+
+    // ALWAYS send relative pointer motion FIRST
+    wlr_relative_pointer_manager_v1_send_relative_motion(
+        cursor->server->relative_pointer_manager, cursor->server->seat,
+        (uint64_t)event->time_msec * 1000, event->delta_x, event->delta_y, event->unaccel_dx,
+        event->unaccel_dy);
 
     if (cursor->implicit_grab.live) {
         qw_cursor_implicit_grab_motion(cursor, event->time_msec, &event->pointer->base,
@@ -150,7 +224,6 @@ static void qw_cursor_handle_motion(struct wl_listener *listener, void *data) {
 }
 
 static void qw_cursor_handle_motion_absolute(struct wl_listener *listener, void *data) {
-    // Handle absolute pointer motion event
     struct qw_cursor *cursor = wl_container_of(listener, cursor, motion_absolute);
     struct wlr_pointer_motion_absolute_event *event = data;
 
@@ -162,6 +235,11 @@ static void qw_cursor_handle_motion_absolute(struct wl_listener *listener, void 
 
     double dx = lx - cursor->cursor->x;
     double dy = ly - cursor->cursor->y;
+
+    // Also send relative motion for absolute events
+    wlr_relative_pointer_manager_v1_send_relative_motion(
+        cursor->server->relative_pointer_manager, cursor->server->seat,
+        (uint64_t)event->time_msec * 1000, dx, dy, dx, dy);
 
     if (cursor->implicit_grab.live) {
         qw_cursor_implicit_grab_motion(cursor, event->time_msec, &event->pointer->base, dx, dy);
@@ -176,58 +254,78 @@ void qw_cursor_warp_cursor(struct qw_cursor *cursor, double x, double y) {
 }
 
 static void qw_cursor_handle_seat_request_set(struct wl_listener *listener, void *data) {
-    // Handle client request to set pointer cursor image
     struct qw_cursor *cursor = wl_container_of(listener, cursor, request_set);
     struct wlr_seat_pointer_request_set_cursor_event *event = data;
 
-    // Only allow focused client to set cursor surface
     struct wlr_seat_client *focused_client = cursor->server->seat->pointer_state.focused_client;
     if (focused_client != event->seat_client) {
         return;
     }
 
-    // Save the requested surface and hotspot info
     cursor->saved_surface = event->surface;
     cursor->saved_hotspot_x = event->hotspot_x;
     cursor->saved_hotspot_y = event->hotspot_y;
 
     if (cursor->hidden) {
-        // Skip applying the cursor while hidden
         return;
     }
 
     wlr_cursor_set_surface(cursor->cursor, event->surface, event->hotspot_x, event->hotspot_y);
 }
 
+// ============================================================================
+// OPTION A FIX: Improved implicit grab release
+// ============================================================================
 void qw_cursor_release_implicit_grab(struct qw_cursor *cursor, uint32_t time) {
     if (cursor->implicit_grab.live) {
         wlr_log(WLR_DEBUG, "Releasing implicit grab.");
+
+        // Calculate final surface-local coords using the same formula as motion
+        struct wlr_seat *seat = cursor->server->seat;
+        double sx = cursor->implicit_grab.grab_sx + 
+                   (cursor->cursor->x - cursor->implicit_grab.grab_cursor_x);
+        double sy = cursor->implicit_grab.grab_sy + 
+                   (cursor->cursor->y - cursor->implicit_grab.grab_cursor_y);
+
+        // Warp seat pointer state to match where client thinks cursor is
+        wlr_seat_pointer_warp(seat, sx, sy);
+
         cursor->implicit_grab.live = false;
-        // Pretend the cursor just appeared where it is.
-        qw_cursor_process_motion(cursor, time, NULL, 0, 0, 0, 0);
+        cursor->implicit_grab.surface = NULL;
+
+        // Now do normal rebase
+        // FIX: Use update_pointer_focus instead of process_motion to avoid snapback
+        // process_motion sends scene-based coords which may differ from offset-based coords
+        qw_cursor_update_pointer_focus(cursor);
     }
 }
 
+// ============================================================================
+// OPTION A FIX: Create implicit grab with absolute positions
+// ============================================================================
 static void qw_cursor_create_implicit_grab(struct qw_cursor *cursor, uint32_t time) {
     struct wlr_seat *seat = cursor->server->seat;
-    double x = cursor->cursor->x;
-    double y = cursor->cursor->y;
-    double sx = seat->pointer_state.sx;
-    double sy = seat->pointer_state.sy;
+
     qw_cursor_release_implicit_grab(cursor, time);
     wlr_log(WLR_DEBUG, "Creating implicit grab.");
 
-    cursor->implicit_grab.start_dx = sx - x;
-    cursor->implicit_grab.start_dy = sy - y;
+    // Store absolute positions at grab start
+    cursor->implicit_grab.surface = seat->pointer_state.focused_surface;
+    cursor->implicit_grab.grab_cursor_x = cursor->cursor->x;
+    cursor->implicit_grab.grab_cursor_y = cursor->cursor->y;
+    cursor->implicit_grab.grab_sx = seat->pointer_state.sx;
+    cursor->implicit_grab.grab_sy = seat->pointer_state.sy;
     cursor->implicit_grab.live = true;
+
+    wlr_log(WLR_DEBUG, "Implicit grab created: cursor=(%.1f,%.1f) sx=%.1f sy=%.1f",
+            cursor->implicit_grab.grab_cursor_x, cursor->implicit_grab.grab_cursor_y,
+            cursor->implicit_grab.grab_sx, cursor->implicit_grab.grab_sy);
 }
 
 static bool qw_cursor_process_button(struct qw_cursor *cursor, int button, bool pressed) {
-    // Get current keyboard modifiers (shift, ctrl, etc)
     struct wlr_keyboard *kb = wlr_seat_get_keyboard(cursor->server->seat);
     uint32_t modifiers = kb ? wlr_keyboard_get_modifiers(kb) : 0;
 
-    // Call server's button callback with button info and modifiers
     if (cursor->server->lock_state == QW_SESSION_LOCK_UNLOCKED) {
         return cursor->server->cursor_button_cb(button, modifiers, pressed, (int)cursor->cursor->x,
                                                 (int)cursor->cursor->y,
@@ -237,19 +335,16 @@ static bool qw_cursor_process_button(struct qw_cursor *cursor, int button, bool 
 }
 
 static void qw_cursor_handle_button(struct wl_listener *listener, void *data) {
-    // Handle pointer button press/release event
     struct qw_cursor *cursor = wl_container_of(listener, cursor, button);
     struct wlr_seat *seat = cursor->server->seat;
     struct wlr_pointer_button_event *event = data;
 
     qw_server_idle_notify_activity(cursor->server);
 
-    // Translate event button to internal code (e.g. BTN_LEFT)
     uint32_t button = qw_util_get_button_code(event->button);
     bool pressed = event->state == WL_POINTER_BUTTON_STATE_PRESSED;
     bool handled = false;
     static int pressed_button_count = 0;
-    // TODO: exclusive client
 
     if (button != 0) {
         if (pressed) {
@@ -267,7 +362,6 @@ static void qw_cursor_handle_button(struct wl_listener *listener, void *data) {
             return;
         }
 
-        // When the pointer is constrained, skip further processing
         if (!cursor->active_constraint || event->pointer->base.type != WLR_INPUT_DEVICE_POINTER) {
             handled = qw_cursor_process_button(cursor, button, pressed);
 
@@ -288,17 +382,15 @@ static void qw_cursor_handle_button(struct wl_listener *listener, void *data) {
 }
 
 static void qw_cursor_handle_axis(struct wl_listener *listener, void *data) {
-    // Handle scroll (axis) event
     struct qw_cursor *cursor = wl_container_of(listener, cursor, axis);
     struct wlr_pointer_axis_event *event = data;
 
     qw_server_idle_notify_activity(cursor->server);
 
     static double displacement = 0;
-    static const uint32_t DISPLACEMENT_PER_STEP = 15; // could be configurable
+    static const uint32_t DISPLACEMENT_PER_STEP = 15;
     bool handled = false;
 
-    // When the pointer is constrained, skip further processing
     if (cursor->active_constraint && event->pointer->base.type == WLR_INPUT_DEVICE_POINTER) {
         wlr_seat_pointer_notify_axis(cursor->server->seat, event->time_msec, event->orientation,
                                      event->delta, event->delta_discrete, event->source,
@@ -306,7 +398,6 @@ static void qw_cursor_handle_axis(struct wl_listener *listener, void *data) {
         return;
     }
 
-    // Determine which button this corresponds to
     uint32_t button = 0;
     if (event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL) {
         button = (event->delta > 0) ? BUTTON_SCROLL_DOWN : BUTTON_SCROLL_UP;
@@ -317,12 +408,9 @@ static void qw_cursor_handle_axis(struct wl_listener *listener, void *data) {
     uint32_t button_mapped = qw_util_get_button_code(button);
 
     if (!cursor->implicit_grab.live) {
-        // If it's a physical wheel fire callback immediately if there is a discrete delta
         if (event->source == WL_POINTER_AXIS_SOURCE_WHEEL && event->delta_discrete != 0) {
             handled = qw_cursor_process_button(cursor, button_mapped, true);
-            // for anything else, we're using rate limiting
         } else if (event->source != WL_POINTER_AXIS_SOURCE_WHEEL) {
-            // Touchpad or smooth scroll: integrate displacement
             displacement += event->delta;
 
             double abs_displacement = fabs(displacement);
@@ -337,7 +425,6 @@ static void qw_cursor_handle_axis(struct wl_listener *listener, void *data) {
     }
 
     if (!handled) {
-        // Forward axis event to seat if not handled
         wlr_seat_pointer_notify_axis(cursor->server->seat, event->time_msec, event->orientation,
                                      event->delta, event->delta_discrete, event->source,
                                      event->relative_direction);
@@ -346,13 +433,11 @@ static void qw_cursor_handle_axis(struct wl_listener *listener, void *data) {
 
 static void qw_cursor_handle_frame(struct wl_listener *listener, void *data) {
     UNUSED(data);
-    // Handle frame event (batch end for pointer events)
     struct qw_cursor *cursor = wl_container_of(listener, cursor, frame);
     wlr_seat_pointer_notify_frame(cursor->server->seat);
 }
 
 struct qw_cursor *qw_server_cursor_create(struct qw_server *server) {
-    // Allocate memory for qw_cursor
     struct qw_cursor *cursor = calloc(1, sizeof(*cursor));
     if (!cursor) {
         wlr_log(WLR_ERROR, "failed to create qw_cursor struct");
@@ -364,7 +449,6 @@ struct qw_cursor *qw_server_cursor_create(struct qw_server *server) {
     wlr_cursor_attach_output_layout(cursor->cursor, server->output_layout);
     cursor->mgr = wlr_xcursor_manager_create(NULL, 24);
 
-    // Setup listeners for various pointer events
     cursor->request_set.notify = qw_cursor_handle_seat_request_set;
     wl_signal_add(&server->seat->events.request_set_cursor, &cursor->request_set);
 
@@ -432,9 +516,6 @@ static void warp_to_constraint_cursor_hint(struct qw_cursor *cursor) {
         double ly = view->y + sy;
 
         wlr_cursor_warp(cursor->cursor, NULL, lx, ly);
-
-        // Warp the pointer as well, so that on the next pointer rebase we don't
-        // send an unexpected synthetic motion event to clients.
         wlr_seat_pointer_warp(constraint->seat, sx, sy);
     }
 }
@@ -473,7 +554,6 @@ static void check_constraint_region(struct qw_cursor *cursor) {
     if (cursor->active_confine_requires_warp && view) {
         cursor->active_confine_requires_warp = false;
 
-        // We may be over the constrained surface but haven't got pointer focus yet
         if (cursor->server->seat->pointer_state.focused_surface != constraint->surface) {
             qw_cursor_update_pointer_focus(cursor);
         }
@@ -495,7 +575,6 @@ static void check_constraint_region(struct qw_cursor *cursor) {
         }
     }
 
-    // A locked pointer will result in an empty region, thus disallowing all movement
     if (constraint->type == WLR_POINTER_CONSTRAINT_V1_CONFINED) {
         pixman_region32_copy(&cursor->confine, region);
     } else {
@@ -533,12 +612,6 @@ void qw_cursor_constrain_cursor(struct qw_cursor *cursor,
 
     cursor->active_confine_requires_warp = true;
 
-    // Comment from sway:
-    // FIXME: Big hack, stolen from wlr_pointer_constraints_v1.c:121.
-    // This is necessary because the focus may be set before the surface
-    // has finished committing, which means that warping won't work properly,
-    // since this code will be run *after* the focus has been set.
-    // That is why we duplicate the code here.
     if (pixman_region32_not_empty(&constraint->current.region)) {
         pixman_region32_intersect(&constraint->region, &constraint->surface->input_region,
                                   &constraint->current.region);
@@ -581,7 +654,7 @@ static bool xcursor_manager_is_named(const struct wlr_xcursor_manager *manager, 
 
 void qw_cursor_configure_xcursor(struct qw_cursor *cursor) {
     unsigned cursor_size = 24;
-    const char *cursor_theme = NULL; // Defaults prob not necessary here?
+    const char *cursor_theme = NULL;
 
     struct qw_server *server = cursor->server;
     struct qw_qtile_config *config = server->get_qtile_config_cb(server->cb_data);
@@ -618,8 +691,6 @@ void qw_cursor_configure_xcursor(struct qw_cursor *cursor) {
     }
 #endif
 
-    /* Create xcursor manager if we don't have one already, or if the
-     * theme has changed */
     if (cursor->mgr == NULL || !xcursor_manager_is_named(cursor->mgr, cursor_theme) ||
         cursor->mgr->size != cursor_size) {
         wlr_xcursor_manager_destroy(cursor->mgr);
@@ -638,7 +709,6 @@ void qw_cursor_configure_xcursor(struct qw_cursor *cursor) {
             }
         }
 
-        // Reset the cursor so that we apply it to outputs that just appeared
         wlr_cursor_unset_image(cursor->cursor);
         wlr_cursor_set_xcursor(cursor->cursor, cursor->mgr, "default");
         wlr_cursor_warp(cursor->cursor, NULL, cursor->cursor->x, cursor->cursor->y);

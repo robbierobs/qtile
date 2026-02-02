@@ -5,11 +5,19 @@
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 
-struct qw_server; // Forward declaration to avoid circular dependency
+struct qw_server;  // Forward declaration to avoid circular dependency
 
+// ============================================================================
+// FIX: Updated implicit grab structure to track absolute positions
+// instead of relative offsets. This prevents coordinate drift when
+// XWayland surfaces move or change geometry during a grab.
+// ============================================================================
 struct qw_implicit_grab {
-    double start_dx;
-    double start_dy;
+    struct wlr_surface *surface;   // The grabbed surface (for validation)
+    double grab_cursor_x;          // Cursor layout X at grab start
+    double grab_cursor_y;          // Cursor layout Y at grab start
+    double grab_sx;                // Surface-local X at grab start
+    double grab_sy;                // Surface-local Y at grab start
     bool live;
 };
 

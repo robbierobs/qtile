@@ -333,7 +333,19 @@ static void qw_xwayland_view_place(void *self, int x, int y, int width, int heig
     // TODO: don't force repo
     if (needs_repos) {
         // For XWayland, we configure the surface position and size
-        wlr_xwayland_surface_configure(qw_xsurface, x, y, width, height);
+        // FIX: Sway PR #5742 - Only configure if integer coords changed
+        // X11 uses integers, redundant configures cause transaction timeouts
+        int ix = x, iy = y;
+        if (ix != xwayland_view->last_configure_x ||
+            iy != xwayland_view->last_configure_y ||
+            width != xwayland_view->last_configure_w ||
+            height != xwayland_view->last_configure_h) {
+            wlr_xwayland_surface_configure(qw_xsurface, ix, iy, width, height);
+            xwayland_view->last_configure_x = ix;
+            xwayland_view->last_configure_y = iy;
+            xwayland_view->last_configure_w = width;
+            xwayland_view->last_configure_h = height;
+        }
         qw_xwayland_view_clip(xwayland_view);
 
         // Resize the foreign toplevel output tracking buffer
@@ -726,7 +738,19 @@ static uint32_t qw_xwayland_view_configure(struct qw_view *view, double lx, doub
 
     struct wlr_xwayland_surface *qw_xsurface = xwayland_view->xwayland_surface;
 
-    wlr_xwayland_surface_configure(qw_xsurface, lx, ly, width, height);
+    // FIX: Sway PR #5742 - Cast to int before configure
+    // X11 uses integers, sub-pixel changes cause redundant configures
+    int ix = (int)lx, iy = (int)ly;
+    if (ix != xwayland_view->last_configure_x ||
+        iy != xwayland_view->last_configure_y ||
+        width != xwayland_view->last_configure_w ||
+        height != xwayland_view->last_configure_h) {
+        wlr_xwayland_surface_configure(qw_xsurface, ix, iy, width, height);
+        xwayland_view->last_configure_x = ix;
+        xwayland_view->last_configure_y = iy;
+        xwayland_view->last_configure_w = width;
+        xwayland_view->last_configure_h = height;
+    }
 
     // xwayland doesn't give us a serial for the configure
     return 0;
