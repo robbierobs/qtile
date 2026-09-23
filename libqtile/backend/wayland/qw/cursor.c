@@ -90,6 +90,15 @@ static void qw_cursor_process_motion(struct qw_cursor *cursor, uint32_t time,
                                      double dx_unaccel, double dy_unaccel) {
     struct wlr_seat *seat = cursor->server->seat;
 
+    // Barriers are tested against the unclamped target; wlr_cursor_move would clamp it to
+    // the layout. A constrained pointer belongs to its client and cannot trigger them.
+    if (cursor->server->lock_state == QW_SESSION_LOCK_UNLOCKED && !cursor->active_constraint &&
+        qw_input_capture_check_barriers(cursor->server, cursor->cursor->x, cursor->cursor->y, dx,
+                                        dy)) {
+        qw_input_capture_handle_motion(cursor->server, dx, dy);
+        return;
+    }
+
     // Handle motion if server is in a locked state
     if (cursor->server->lock_state != QW_SESSION_LOCK_UNLOCKED) {
         if (cursor->server->lock && !wl_list_empty(&cursor->server->lock->lock->surfaces)) {
@@ -174,6 +183,10 @@ static void qw_cursor_handle_motion(struct wl_listener *listener, void *data) {
 
     qw_server_idle_notify_activity(cursor->server);
 
+    if (qw_input_capture_handle_motion(cursor->server, event->delta_x, event->delta_y)) {
+        return;
+    }
+
     if (cursor->implicit_grab.live) {
         qw_cursor_implicit_grab_motion(cursor, event->time_msec, &event->pointer->base,
                                        event->delta_x, event->delta_y);
@@ -196,6 +209,10 @@ static void qw_cursor_handle_motion_absolute(struct wl_listener *listener, void 
 
     double dx = lx - cursor->cursor->x;
     double dy = ly - cursor->cursor->y;
+
+    if (qw_input_capture_handle_motion(cursor->server, dx, dy)) {
+        return;
+    }
 
     if (cursor->implicit_grab.live) {
         qw_cursor_implicit_grab_motion(cursor, event->time_msec, &event->pointer->base, dx, dy);
@@ -286,9 +303,13 @@ static void qw_cursor_handle_button(struct wl_listener *listener, void *data) {
 
     qw_server_idle_notify_activity(cursor->server);
 
+    bool pressed = event->state == WL_POINTER_BUTTON_STATE_PRESSED;
+    if (qw_input_capture_handle_button(cursor->server, event->button, pressed)) {
+        return;
+    }
+
     // Translate event button to internal code (e.g. BTN_LEFT)
     uint32_t button = qw_util_get_button_code(event->button);
-    bool pressed = event->state == WL_POINTER_BUTTON_STATE_PRESSED;
     bool handled = false;
     static int pressed_button_count = 0;
     // TODO: exclusive client
@@ -335,6 +356,10 @@ static void qw_cursor_handle_axis(struct wl_listener *listener, void *data) {
     struct wlr_pointer_axis_event *event = data;
 
     qw_server_idle_notify_activity(cursor->server);
+
+    if (qw_input_capture_handle_axis(cursor->server, event)) {
+        return;
+    }
 
     static double displacement = 0;
     static const uint32_t DISPLACEMENT_PER_STEP = 15; // could be configurable
@@ -390,6 +415,9 @@ static void qw_cursor_handle_frame(struct wl_listener *listener, void *data) {
     UNUSED(data);
     // Handle frame event (batch end for pointer events)
     struct qw_cursor *cursor = wl_container_of(listener, cursor, frame);
+    if (qw_input_capture_handle_frame(cursor->server)) {
+        return;
+    }
     wlr_seat_pointer_notify_frame(cursor->server->seat);
 }
 

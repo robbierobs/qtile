@@ -95,6 +95,12 @@ void qw_server_finalize(struct qw_server *server) {
     wlr_xwayland_destroy(server->xwayland);
 #endif
 
+    // Sessions the portal did not close; their EIS clients are dropped with them
+    struct qw_input_capture *capture, *tmp_capture;
+    wl_list_for_each_safe(capture, tmp_capture, &server->input_captures, link) {
+        qw_input_capture_destroy(capture);
+    }
+
     wl_display_destroy_clients(server->display);
     wlr_scene_node_destroy(&server->scene->tree.node);
     qw_cursor_destroy(server->cursor);
@@ -234,6 +240,8 @@ static void qw_server_handle_output_layout_change(struct wl_listener *listener, 
     }
 
     wlr_output_manager_v1_set_configuration(server->output_mgr, config);
+
+    qw_input_capture_handle_layout_change(server);
 
     // Only trigger screen change callback if the session is active
     // or if session is NULL (i.e. in a nested or headless session)
@@ -1075,6 +1083,9 @@ bool qw_server_init(struct qw_server *server) {
     // Initialize idle timers list
     wl_list_init(&server->idle_timers);
 
+    // Input capture sessions are created by the portal
+    wl_list_init(&server->input_captures);
+
     // Keyboard shortcut inhibitors
     wl_list_init(&server->shortcut_inhibitors);
     server->shortcut_inhibitor_manager = wlr_keyboard_shortcuts_inhibit_v1_create(server->display);
@@ -1165,6 +1176,7 @@ bool qw_server_change_vt(struct qw_server *server, int vt) {
     if (!server || !server->session) {
         return false;
     }
+    qw_input_capture_force_release_all(server);
     return wlr_session_change_vt(server->session, vt);
 }
 

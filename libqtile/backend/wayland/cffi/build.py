@@ -140,6 +140,11 @@ PROTOS: list[Protocol] = [
         build_server=False,
     ),
     Protocol(
+        f"{QW_PROTO_IN_PATH}/wlr-virtual-pointer-unstable-v1.xml",
+        build_client=True,
+        build_server=False,
+    ),
+    Protocol(
         f"{WAYLAND_PROTOCOLS}/unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml",
         build_client=True,
         build_server=False,
@@ -215,6 +220,20 @@ TEST_CLIENTS: list[TestClient] = [
         includes=[QW_PROTO_OUT_PATH, TEST_CLIENT_SRC_PATH],
     ),
     TestClient(
+        name="virtual-pointer",
+        sources=[
+            TEST_CLIENT_SRC_PATH / "virtual-pointer.c",
+            CLIENT_BASE,
+            QW_PROTO_OUT_PATH / "wlr-virtual-pointer-unstable-v1-protocol.c",
+        ],
+        includes=[QW_PROTO_OUT_PATH, TEST_CLIENT_SRC_PATH],
+    ),
+    TestClient(
+        name="ei-receiver",
+        sources=[TEST_CLIENT_SRC_PATH / "ei-receiver.c"],
+        packages=["libei-1.0"],
+    ),
+    TestClient(
         name="shortcut-inhibitor",
         sources=[
             TEST_CLIENT_SRC_PATH / "shortcut-inhibitor.c",
@@ -239,6 +258,7 @@ CDEF_FILES = [
     "cursor.h",
     "input-device.h",
     "keyboard.h",
+    "input-capture.h",
 ]
 XWAYLAND_ONLY_SOURCES = ["xwayland-view.c"]
 
@@ -274,10 +294,11 @@ class BuildConfig:
                 os.getenv("QTILE_PIXMAN_PATH", "/usr/include/pixman-1"),
                 os.getenv("QTILE_LIBDRM_PATH", "/usr/include/libdrm"),
                 WLROOTS_PATH,
+                os.getenv("QTILE_LIBEI_PATH", "/usr/include/libei-1.0"),
                 str(QW_PATH),
                 str(QW_PROTO_OUT_PATH),
             ],
-            libraries=["wlroots-0.20", "wayland-server", "input", "cairo"],
+            libraries=["wlroots-0.20", "wayland-server", "input", "cairo", "eis"],
             source_files=source_files,
             macros=macros,
         )
@@ -378,6 +399,10 @@ extern "Python" bool remove_idle_inhibitor_cb(void *userdata, void *inhibitor);
 extern "Python" bool check_inhibited_cb(void *userdata);
 extern "Python" struct qw_qtile_config *get_qtile_config_cb(void *userdata);
 extern "Python" void idle_state_change_cb(void *userdata, int seconds, bool is_idle);
+extern "Python" void input_capture_activated_cb(void *userdata, uint32_t activation_id, uint32_t barrier_id, double x, double y);
+extern "Python" void input_capture_deactivated_cb(void *userdata, uint32_t activation_id);
+extern "Python" void input_capture_disabled_cb(void *userdata);
+extern "Python" void input_capture_zones_changed_cb(void *userdata);
 
 extern "Python" int request_focus_cb(void *userdata);
 extern "Python" int request_close_cb(void *userdata);

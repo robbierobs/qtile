@@ -255,6 +255,9 @@ void qw_session_lock_handle_new(struct wl_listener *listener, void *data) {
     server->lock = lock;
     server->lock_state = QW_SESSION_LOCK_LOCKED;
 
+    // Input must not keep going to another machine while locked
+    qw_input_capture_force_release_all(server);
+
     lock->new_surface.notify = qw_session_lock_handle_new_surface;
     wl_signal_add(&session_lock->events.new_surface, &lock->new_surface);
 
