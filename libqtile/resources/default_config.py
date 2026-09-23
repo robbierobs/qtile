@@ -213,6 +213,13 @@ wl_input_rules = None
 wl_xcursor_theme = None
 wl_xcursor_size = 24
 
+# Programs allowed to capture input through the InputCapture portal on Wayland, e.g. to
+# share this machine's keyboard and mouse with Synergy or Deskflow. Entries are app IDs,
+# executable paths or executable names; the portal only runs when this is not empty.
+wl_input_capture_apps = []  # type: list
+# Modifiers and key that always hand captured input back to qtile
+wl_input_capture_release_key = (["mod4", "shift"], "Escape")
+
 idle_timers = []  # type: list
 idle_inhibitors = []  # type: list
 

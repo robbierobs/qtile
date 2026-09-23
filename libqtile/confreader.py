@@ -54,6 +54,8 @@ class Config:
     wl_input_rules: dict[str, Any] | None
     wl_xcursor_theme: str | None
     wl_xcursor_size: int
+    wl_input_capture_apps: list[str]
+    wl_input_capture_release_key: tuple[list[str], str]
     idle_timers: list[IdleTimer]
     idle_inhibitors: list[IdleInhibitor]
     fake_screens: list[Screen] | None
