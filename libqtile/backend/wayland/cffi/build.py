@@ -70,6 +70,9 @@ class Protocol:
     xml_path: str
     build_server: bool = True
     build_client: bool = False
+    # Set when the server side is implemented in qw/ rather than by wlroots, so the
+    # interface definitions must be compiled into the backend.
+    link_server: bool = False
 
     @property
     def stem(self) -> str:
@@ -143,6 +146,10 @@ PROTOS: list[Protocol] = [
         f"{WAYLAND_PROTOCOLS}/unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml",
         build_client=True,
         build_server=False,
+    ),
+    Protocol(
+        f"{WAYLAND_PROTOCOLS}/unstable/xwayland-keyboard-grab/xwayland-keyboard-grab-unstable-v1.xml",
+        link_server=True,
     ),
 ]
 
@@ -240,7 +247,11 @@ CDEF_FILES = [
     "input-device.h",
     "keyboard.h",
 ]
-XWAYLAND_ONLY_SOURCES = ["xwayland-view.c"]
+XWAYLAND_ONLY_SOURCES = [
+    "xwayland-view.c",
+    "xwayland-keyboard-grab.c",
+    "xwayland-keyboard-grab-unstable-v1-protocol.c",
+]
 
 
 def wlroots_has_xwayland() -> bool:
@@ -260,6 +271,11 @@ class BuildConfig:
     def from_environment(cls) -> "BuildConfig":
         has_xwayland = wlroots_has_xwayland()
         source_files = glob.glob(f"{QW_PATH}/*.c")
+        source_files += [
+            (QW_PROTO_OUT_PATH / proto.private_code).as_posix()
+            for proto in PROTOS
+            if proto.link_server
+        ]
         if not has_xwayland:
             source_files = [
                 f for f in source_files if not any(x in f for x in XWAYLAND_ONLY_SOURCES)
@@ -285,7 +301,7 @@ class BuildConfig:
     @property
     def objects(self) -> list[Path]:
         return [
-            Path(src).parent / "build" / Path(src).with_suffix(".o").name
+            QW_PATH / "build" / Path(src).relative_to(QW_PATH).with_suffix(".o")
             for src in self.source_files
         ]
 
@@ -446,6 +462,7 @@ def _generate_protocol(proto: Protocol) -> None:
         _run_scanner("server-header", proto.xml_path, QW_PROTO_OUT_PATH / proto.server_header)
     if proto.build_client:
         _run_scanner("client-header", proto.xml_path, QW_PROTO_OUT_PATH / proto.client_header)
+    if proto.build_client or proto.link_server:
         _run_scanner("private-code", proto.xml_path, QW_PROTO_OUT_PATH / proto.private_code)
 
 
@@ -463,7 +480,7 @@ def build_c_objects(config: BuildConfig, *, debug: bool = False, asan: bool = Fa
         preargs += ["-fPIC", "-Wall", "-Wextra"]
 
         cmd.shlib_compiler.compile(
-            [os.path.basename(p) for p in config.source_files],
+            [os.path.relpath(p, QW_PATH) for p in config.source_files],
             output_dir="build",
             macros=config.macros,
             include_dirs=config.include_dirs,

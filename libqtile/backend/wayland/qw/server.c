@@ -93,6 +93,7 @@ void qw_server_finalize(struct qw_server *server) {
     wl_list_remove(&server->new_xwayland_surface.link);
     wl_list_remove(&server->xwayland_ready.link);
     wlr_xwayland_destroy(server->xwayland);
+    qw_xwayland_keyboard_grab_manager_destroy(server->xwayland_keyboard_grab_manager);
 #endif
 
     wl_display_destroy_clients(server->display);
@@ -1087,6 +1088,13 @@ bool qw_server_init(struct qw_server *server) {
                   &server->new_shortcut_inhibitor);
 
 #if WLR_HAS_XWAYLAND
+    // Lets X11 clients (e.g. remote desktop apps) inhibit keybindings by grabbing the keyboard
+    server->xwayland_keyboard_grab_manager = qw_xwayland_keyboard_grab_manager_create(server);
+    if (server->xwayland_keyboard_grab_manager == NULL) {
+        wlr_log(WLR_ERROR, "failed to create xwayland keyboard grab manager");
+        return false;
+    }
+
     server->xwayland = wlr_xwayland_create(server->display, server->compositor, true);
     if (server->xwayland == NULL) {
         wlr_log(WLR_ERROR, "failed to create xwayland");
