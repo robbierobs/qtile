@@ -258,6 +258,9 @@ void qw_input_capture_destroy(struct qw_input_capture *capture) {
     qw_input_capture_deactivate(capture, false, false, 0, 0);
     wl_list_remove(&capture->link);
     qw_input_capture_forget_client(capture);
+    if (capture->repeat_source != NULL) {
+        wl_event_source_remove(capture->repeat_source);
+    }
     wl_event_source_remove(capture->eis_source);
     eis_unref(capture->eis);
     free(capture->barriers);
@@ -311,12 +314,20 @@ bool qw_input_capture_add_barrier(struct qw_input_capture *capture, uint32_t id,
 
 void qw_input_capture_enable(struct qw_input_capture *capture) { capture->enabled = true; }
 
+static void qw_input_capture_stop_repeat(struct qw_input_capture *capture) {
+    capture->repeating = false;
+    if (capture->repeat_source != NULL) {
+        wl_event_source_timer_update(capture->repeat_source, 0);
+    }
+}
+
 // Stops forwarding and hands input back to Qtile
 static void qw_input_capture_deactivate(struct qw_input_capture *capture, bool notify,
                                         bool has_position, double x, double y) {
     if (!capture->active) {
         return;
     }
+    qw_input_capture_stop_repeat(capture);
 
     // Nothing may stay pressed on the receiver's side
     if (capture->keyboard != NULL) {
@@ -566,6 +577,43 @@ static bool qw_input_capture_is_release_key(struct qw_server *server, struct qw_
     return false;
 }
 
+static int qw_input_capture_do_repeat(void *data) {
+    struct qw_input_capture *capture = data;
+    if (!capture->active || !capture->repeating || capture->keyboard == NULL) {
+        return 0;
+    }
+    eis_device_keyboard_key(capture->keyboard, capture->repeat_key, true);
+    eis_device_frame(capture->keyboard, eis_now(capture->eis));
+    wl_event_source_timer_update(capture->repeat_source, 1000 / capture->repeat_rate);
+    return 0;
+}
+
+// Repeats the last key pressed, as Wayland clients do, at the keyboard's repeat settings
+static void qw_input_capture_start_repeat(struct qw_input_capture *capture,
+                                          struct wlr_keyboard *wlr_keyboard, uint32_t keycode) {
+    // Modifiers and the like do not repeat, nor stop another key repeating
+    if (!xkb_keymap_key_repeats(wlr_keyboard->keymap, keycode + 8)) {
+        return;
+    }
+    qw_input_capture_stop_repeat(capture);
+    if (wlr_keyboard->repeat_info.rate <= 0) {
+        return;
+    }
+
+    if (capture->repeat_source == NULL) {
+        capture->repeat_source = wl_event_loop_add_timer(capture->server->event_loop,
+                                                         qw_input_capture_do_repeat, capture);
+        if (capture->repeat_source == NULL) {
+            return;
+        }
+    }
+    capture->repeating = true;
+    capture->repeat_key = keycode;
+    capture->repeat_rate = wlr_keyboard->repeat_info.rate;
+    int32_t delay = wlr_keyboard->repeat_info.delay;
+    wl_event_source_timer_update(capture->repeat_source, delay > 0 ? delay : 1);
+}
+
 bool qw_input_capture_handle_key(struct qw_server *server, struct qw_keyboard *keyboard,
                                  struct wlr_keyboard_key_event *event) {
     struct qw_input_capture *capture = server->active_input_capture;
@@ -594,6 +642,12 @@ bool qw_input_capture_handle_key(struct qw_server *server, struct qw_keyboard *k
     }
     eis_device_keyboard_key(capture->keyboard, event->keycode, pressed);
     eis_device_frame(capture->keyboard, eis_now(capture->eis));
+
+    if (pressed) {
+        qw_input_capture_start_repeat(capture, keyboard->wlr_keyboard, event->keycode);
+    } else if (capture->repeating && event->keycode == capture->repeat_key) {
+        qw_input_capture_stop_repeat(capture);
+    }
     return true;
 }
 

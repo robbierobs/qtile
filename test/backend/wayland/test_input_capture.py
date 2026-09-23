@@ -4,6 +4,7 @@ import os
 import socket
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ class InputCaptureConfig(BareConfig):
 
 KEY_ESC = 1
 KEY_A = 30
+KEY_LEFTSHIFT = 42
 BTN_LEFT = 0x110
 
 
@@ -312,3 +314,29 @@ def test_input_capture_receiver_disconnect(wmanager, receiver, virtual_pointer, 
     wait_for_release()
     tap_with_control(virtual_keyboard, 48)  # b
     assert wmanager.c.group.info()["name"] == "b"
+
+
+def test_input_capture_key_repeat(wmanager, receiver, virtual_pointer, virtual_keyboard):
+    """Held keys repeat as presses, which receivers take as repeats; modifiers do not"""
+    width, height = set_right_barrier(wmanager)
+    activate(wmanager, virtual_pointer, width, height)
+    receiver.lines("events")
+
+    # wlroots keyboards repeat after 600ms at 25Hz by default
+    virtual_keyboard.assert_ok(f"press {KEY_A}")
+    time.sleep(1)
+    virtual_keyboard.assert_ok(f"release {KEY_A}")
+    virtual_keyboard.assert_ok(f"press {KEY_LEFTSHIFT}")
+    time.sleep(1)
+    virtual_keyboard.assert_ok(f"release {KEY_LEFTSHIFT}")
+    time.sleep(0.2)
+
+    events = receiver.lines("events")
+    a_events = [e for e in events if e.startswith(f"key {KEY_A} ")]
+    assert a_events[-1] == f"key {KEY_A} release"
+    assert set(a_events[:-1]) == {f"key {KEY_A} press"}
+    assert len(a_events[:-1]) >= 5, events
+    assert [e for e in events if e.startswith(f"key {KEY_LEFTSHIFT} ")] == [
+        f"key {KEY_LEFTSHIFT} press",
+        f"key {KEY_LEFTSHIFT} release",
+    ]
