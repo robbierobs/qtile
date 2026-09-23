@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <unistd.h>
 
+#include "input-capture.h"
 #include "session-lock.h"
 #include <cairo.h>
 #include <wayland-server-core.h>
@@ -159,6 +160,13 @@ typedef struct qw_qtile_config *(*get_qtile_config_cb_t)(void *userdata);
 // Callback for idle state change
 typedef void (*idle_state_change_cb_t)(void *userdata, int seconds, bool is_idle);
 
+// Callbacks for input capture sessions; userdata is the session's
+typedef void (*input_capture_activated_cb_t)(void *userdata, uint32_t activation_id,
+                                             uint32_t barrier_id, double x, double y);
+typedef void (*input_capture_deactivated_cb_t)(void *userdata, uint32_t activation_id);
+typedef void (*input_capture_disabled_cb_t)(void *userdata);
+typedef void (*input_capture_zones_changed_cb_t)(void *userdata);
+
 enum {
     LAYER_BACKGROUND,   // background, layer shell
     LAYER_BOTTOM,       // bottom, layer shell
@@ -221,6 +229,10 @@ struct qw_server {
     check_inhibited_cb_t check_inhibited_cb;
     get_qtile_config_cb_t get_qtile_config_cb;
     idle_state_change_cb_t idle_state_change_cb;
+    input_capture_activated_cb_t input_capture_activated_cb;
+    input_capture_deactivated_cb_t input_capture_deactivated_cb;
+    input_capture_disabled_cb_t input_capture_disabled_cb;
+    input_capture_zones_changed_cb_t input_capture_zones_changed_cb;
     void *view_activation_cb_data;
     void *cb_data;
     struct qw_layer_view *exclusive_layer;
@@ -297,6 +309,12 @@ struct qw_server {
     struct wlr_pointer_constraints_v1 *pointer_constraints;
     struct wl_listener new_pointer_constraint;
     struct wlr_keyboard *dummy_keyboard;
+    struct wl_list input_captures; // qw_input_capture.link
+    struct qw_input_capture *active_input_capture;
+    uint32_t input_capture_release_keysym;
+    uint32_t input_capture_release_modifiers;
+    struct wlr_box input_capture_zones[QW_INPUT_CAPTURE_MAX_ZONES];
+    size_t input_capture_zone_count;
 };
 
 struct qw_drag_icon {

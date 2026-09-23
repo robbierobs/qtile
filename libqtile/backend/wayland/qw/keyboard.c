@@ -109,6 +109,10 @@ static void qw_keyboard_handle_key(struct wl_listener *listener, void *data) {
 
     qw_server_idle_notify_activity(server);
 
+    if (qw_input_capture_handle_key(server, keyboard, event)) {
+        return;
+    }
+
     // keycode offset by 8 as per evdev conventions
     uint32_t keycode = event->keycode + 8;
 
@@ -190,6 +194,9 @@ static void keyboard_handle_modifiers(struct wl_listener *listener, void *data) 
     UNUSED(data);
 
     struct qw_keyboard *keyboard = wl_container_of(listener, keyboard, modifiers);
+    if (qw_input_capture_handle_modifiers(keyboard->server, keyboard)) {
+        return;
+    }
     wlr_seat_set_keyboard(keyboard->server->seat, keyboard->wlr_keyboard);
     wlr_seat_keyboard_notify_modifiers(keyboard->server->seat, &keyboard->wlr_keyboard->modifiers);
 }
@@ -217,6 +224,8 @@ void qw_keyboard_set_keymap(struct qw_keyboard *keyboard, const char *layout, co
     wlr_keyboard_set_keymap(keyboard->wlr_keyboard, keymap);
     xkb_keymap_unref(keymap);
     xkb_context_unref(context);
+
+    qw_input_capture_handle_keymap_change(keyboard->server);
 }
 
 void qw_keyboard_set_repeat_info(struct qw_keyboard *keyboard, int kb_repeat_rate,

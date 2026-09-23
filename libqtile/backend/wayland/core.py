@@ -53,12 +53,14 @@ from libqtile.backend import base
 from libqtile.backend.wayland import inputs
 from libqtile.backend.wayland.idle_inhibit import IdleInhibitorManager
 from libqtile.backend.wayland.idle_notify import IdleNotifier
+from libqtile.backend.wayland.input_capture import InputCaptureSession
+from libqtile.backend.wayland.portal import InputCapturePortal
 from libqtile.backend.wayland.window import Base, Internal, Static, Window
 from libqtile.command.base import allow_when_locked, expose_command
 from libqtile.config import Output, Screen, ScreenRect
 from libqtile.images import Img
 from libqtile.log_utils import logger
-from libqtile.utils import ColorType, QtileError, reap_zombies, rgb
+from libqtile.utils import ColorType, QtileError, create_task, reap_zombies, rgb
 
 try:
     from libqtile.backend.wayland._ffi import ffi, lib
@@ -280,6 +282,10 @@ class Core(base.Core):
         self.qw.check_inhibited_cb = lib.check_inhibited_cb
         self.qw.get_qtile_config_cb = lib.get_qtile_config_cb
         self.qw.idle_state_change_cb = lib.idle_state_change_cb
+        self.qw.input_capture_activated_cb = lib.input_capture_activated_cb
+        self.qw.input_capture_deactivated_cb = lib.input_capture_deactivated_cb
+        self.qw.input_capture_disabled_cb = lib.input_capture_disabled_cb
+        self.qw.input_capture_zones_changed_cb = lib.input_capture_zones_changed_cb
         if not lib.qw_server_start(self.qw):
             sys.exit(1)
         os.environ["WAYLAND_DISPLAY"] = self.display_name
@@ -289,6 +295,9 @@ class Core(base.Core):
         self._locked = False
         self.idle_inhibitor_manager = IdleInhibitorManager(self)
         self.idle_notifier = IdleNotifier(self)
+        self.input_capture_sessions: set[InputCaptureSession] = set()
+        self.input_capture_portal: InputCapturePortal | None = None
+        self.set_input_capture_release_key(["mod4", "shift"], "Escape")
 
     def update_backend_log_level(self) -> None:
         """Update the wlr log level based on Qtile's log level."""
@@ -325,6 +334,8 @@ class Core(base.Core):
         # Apply input device configuration
         if self.qtile.config.wl_input_rules:
             inputs.configure_input_devices(self.qw, self.qtile.config.wl_input_rules)
+
+        self._configure_input_capture()
 
         # Set xcursor environment variables from Python before calling into C.
         # This avoids calling setenv() from C code, which is not thread-safe with
@@ -620,7 +631,31 @@ class Core(base.Core):
             win.activate_by_config()
 
     def finalize(self) -> None:
+        if self.input_capture_portal is not None:
+            self.input_capture_portal.stop()
+        for session in list(self.input_capture_sessions):
+            session.close()
         lib.qw_server_finalize(self.qw)
+
+    def _configure_input_capture(self) -> None:
+        assert self.qtile is not None
+        self.set_input_capture_release_key(*self.qtile.config.wl_input_capture_release_key)
+
+        apps = list(self.qtile.config.wl_input_capture_apps)
+        portal = self.input_capture_portal
+        if portal is not None and not apps:
+            portal.stop()
+            self.input_capture_portal = None
+        elif portal is not None:
+            portal.allowed_apps = apps
+        elif apps:
+            portal = self.input_capture_portal = InputCapturePortal(self, apps)
+            create_task(portal.start())
+
+    def set_input_capture_release_key(self, modifiers: list[str], key: str) -> None:
+        """Set the key that always ends an input capture, e.g. by Synergy."""
+        keysym = lib.qwu_keysym_from_name(key.encode())
+        lib.qw_server_set_input_capture_release_key(self.qw, keysym, translate_masks(modifiers))
 
     @property
     def display_name(self) -> str:
