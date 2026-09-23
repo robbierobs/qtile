@@ -50,6 +50,13 @@ struct qw_input_capture {
     size_t pressed_key_count;
     uint32_t pressed_buttons[16];
     size_t pressed_button_count;
+
+    // libei has no key repeat, so held keys are pressed again as the keyboard would
+    // repeat them; receivers such as Deskflow take a press of a held key as a repeat.
+    struct wl_event_source *repeat_source;
+    uint32_t repeat_key;
+    int32_t repeat_rate;
+    bool repeating;
 };
 
 struct qw_input_capture *qw_input_capture_create(struct qw_server *server, void *userdata);
