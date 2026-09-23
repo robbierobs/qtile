@@ -33,13 +33,40 @@ class RefusingPortalConfig(PortalConfig):
     wl_input_capture_apps = ["com.example.Allowed"]
 
 
+# No <servicedir>, so nothing can be D-Bus activated. With the standard session
+# configuration, xdg-desktop-portal activates the real xdg-document-portal, which mounts
+# over the user's own $XDG_RUNTIME_DIR/doc and unmounts it on exit, breaking every
+# Flatpak app in the running session.
+PRIVATE_BUS_CONFIG = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:dir={tmp}</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+"""
+
+
 @pytest.fixture
-def private_bus(monkeypatch):
-    """A session bus of its own, so tests never touch the real portal."""
+def private_bus(monkeypatch, tmp_path):
+    """A session bus of its own, so tests never touch the real portal or its services."""
     if shutil.which("dbus-daemon") is None:
         pytest.skip("dbus-daemon is not installed")
+    config = tmp_path / "bus.conf"
+    config.write_text(PRIVATE_BUS_CONFIG.format(tmp=tmp_path))
     daemon = subprocess.Popen(
-        ["dbus-daemon", "--session", "--nofork", "--nopidfile", "--print-address=1"],
+        [
+            "dbus-daemon",
+            f"--config-file={config}",
+            "--nofork",
+            "--nopidfile",
+            "--print-address=1",
+        ],
         stdout=subprocess.PIPE,
         text=True,
     )
@@ -259,11 +286,15 @@ def portal_frontend(portal_manager, private_bus):
         (portals / "qtile-portals.conf").write_text(
             "[preferred]\ndefault=none\norg.freedesktop.impl.portal.InputCapture=qtile\n"
         )
+        runtime = Path(tmp) / "runtime"
+        runtime.mkdir(mode=0o700)
         env = dict(
             os.environ,
             DBUS_SESSION_BUS_ADDRESS=private_bus,
             XDG_DESKTOP_PORTAL_DIR=portals.as_posix(),
             XDG_CURRENT_DESKTOP="qtile",
+            # Anything it creates stays out of the user's runtime directory
+            XDG_RUNTIME_DIR=runtime.as_posix(),
         )
         process = subprocess.Popen(
             [frontend.as_posix(), "--replace"],
