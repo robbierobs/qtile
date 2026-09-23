@@ -50,6 +50,7 @@
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
 #if WLR_HAS_XWAYLAND
+#include "xwayland-keyboard-grab.h"
 #include <wlr/xwayland/xwayland.h>
 #include <xcb/xcb.h>
 #endif
@@ -288,6 +289,7 @@ struct qw_server {
     struct wl_listener xwayland_ready;
     struct wl_listener new_xwayland_surface;
     xcb_atom_t xwayland_atoms[ATOM_LAST];
+    struct qw_xwayland_keyboard_grab_manager *xwayland_keyboard_grab_manager;
 #endif
     struct wl_listener request_activate;
     struct wl_listener new_token;

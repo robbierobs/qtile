@@ -20,6 +20,14 @@ static bool qw_is_keyboard_inhibited(struct qw_server *server,
         }
     }
 
+#if WLR_HAS_XWAYLAND
+    // X11 clients inhibit keybindings by grabbing the keyboard instead
+    if (qw_xwayland_keyboard_grab_manager_has_grab(server->xwayland_keyboard_grab_manager,
+                                                   focused_surface)) {
+        return true;
+    }
+#endif
+
     return false;
 }
 
