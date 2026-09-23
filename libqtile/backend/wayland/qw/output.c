@@ -112,6 +112,25 @@ void qw_output_arrange_layers(struct qw_output *output) {
         qw_output_arrange_layer(output, &output->layers[i], &usable_area, 0);
     }
 
+    // A layer surface can give up exclusive keyboard focus without unmapping,
+    // by committing keyboard_interactivity = none (e.g. lan-mouse's input
+    // capture strips on release). The loop below skips non-interactive layers
+    // before it could clear the lock, so do it here: release the exclusive lock
+    // and hand keyboard focus back, as qw_layer_view_handle_unmap does.
+    struct qw_server *server = output->server;
+    struct qw_layer_view *exclusive = server->exclusive_layer;
+    if (exclusive != NULL && exclusive->output == output &&
+        (!exclusive->mapped || exclusive->surface->current.keyboard_interactive !=
+                                   ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)) {
+        server->exclusive_layer = NULL;
+        if (exclusive->surface->current.keyboard_interactive ==
+                ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE &&
+            exclusive->surface->surface == server->seat->keyboard_state.focused_surface &&
+            !server->focus_current_window_cb(server->cb_data)) {
+            wlr_seat_keyboard_clear_focus(server->seat);
+        }
+    }
+
     uint32_t layers_above_shell[] = {
         ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
         ZWLR_LAYER_SHELL_V1_LAYER_TOP,
