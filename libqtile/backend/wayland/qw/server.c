@@ -5,6 +5,7 @@
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/interfaces/wlr_pointer.h>
 #include <wlr/types/wlr_input_device.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
@@ -842,6 +843,18 @@ bool qw_server_init(struct qw_server *server) {
     if (server->compositor == NULL) {
         wlr_log(WLR_ERROR, "failed to create compositor");
         return false;
+    }
+
+    // Explicit sync (linux-drm-syncobj-v1). Without it, clients on drivers that
+    // don't do implicit sync (NVIDIA) can have buffers scanned out before
+    // rendering finishes, which shows up as flickering in Chromium/Electron.
+    // wlr_scene applies the acquire/release points to surfaces automatically.
+    int drm_fd = wlr_renderer_get_drm_fd(server->renderer);
+    if (drm_fd >= 0 && server->renderer->features.timeline &&
+        server->backend->features.timeline) {
+        if (wlr_linux_drm_syncobj_manager_v1_create(server->display, 1, drm_fd) == NULL) {
+            wlr_log(WLR_ERROR, "failed to create linux-drm-syncobj manager");
+        }
     }
 
     if (wlr_subcompositor_create(server->display) == NULL) {
