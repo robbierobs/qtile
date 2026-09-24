@@ -162,3 +162,38 @@ def test_statusnotifier_left_click_vertical_bar(manager_nospawn, sni_config):
 
     manager_nospawn.kill_window(win)
     assert not windows()
+
+
+@pytest.mark.usefixtures("dbus")
+def test_statusnotifier_decodes_icons_off_event_loop(manager_nospawn, sni_config):
+    """Icons are decoded in a worker thread, then drawn from the cache."""
+    manager_nospawn.start(sni_config)
+    widget = manager_nospawn.c.widget["statusnotifier"]
+    widget.eval(
+        "import threading\n"
+        "self._decode_threads = []\n"
+        # eval's locals aren't visible inside the function, so pass them in
+        "def _record(item, size, orig=self._prepare_icon, threads=self._decode_threads,"
+        " threading=threading):\n"
+        "    threads.append(threading.current_thread() is threading.main_thread())\n"
+        "    return orig(item, size)\n"
+        "self._prepare_icon = _record"
+    )
+
+    manager_nospawn.test_window("TestSNI", export_sni=True)
+    wait_for_icon(widget, hidden=False)
+
+    @Retry(ignore_exceptions=(AssertionError,))
+    def decoded():
+        assert widget.eval("self._decode_threads") == "[False]"
+        # The drawn icon is the cached one, already decoded
+        assert (
+            widget.eval(
+                "(lambda w: all(images is item.images and hasattr(icon, '_pattern')"
+                " for item in w.available_icons"
+                " for images, icon in [w._ready_icons[id(item)]]))(self)"
+            )
+            == "True"
+        )
+
+    decoded()
