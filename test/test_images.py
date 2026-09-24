@@ -7,6 +7,7 @@ import os
 from copy import copy
 from glob import glob
 from os import path
+from unittest.mock import Mock
 
 import cairocffi
 import cairocffi.pixbuf
@@ -362,6 +363,43 @@ class TestImgResize:
         png_img.resize(height=20)
         assert png_img.surface is not surface
         assert png_img.surface.get_height() == 20
+
+    def test_reset_does_not_decode(self, png_img, monkeypatch):
+        """Resetting an image that was never drawn has nothing to throw away"""
+        decode = Mock(wraps=images.get_cairo_surface)
+        monkeypatch.setattr(images, "get_cairo_surface", decode)
+        png_img.default_size  # noqa: B018 - decodes once, at the natural size
+        decode.reset_mock()
+        png_img.resize(height=20)
+        png_img.paint_mask("#ff0000")
+        decode.assert_not_called()
+
+    def test_scaled_pattern_cached(self, png_img):
+        png_img.resize(height=16)
+        pattern = png_img.scaled_pattern(1.5)
+        assert pattern.get_surface().get_height() == 24
+        assert png_img.scaled_pattern(1.5) is pattern
+        # The image itself keeps its size
+        assert png_img.height == 16
+        assert png_img.scaled_pattern(2).get_surface().get_height() == 32
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            lambda img: img.resize(height=20),
+            lambda img: setattr(img, "theta", 90.0),
+            lambda img: img.paint_mask("#ff0000"),
+        ],
+    )
+    def test_scaled_pattern_rebuilt_on_change(self, png_img, change):
+        png_img.resize(height=16)
+        pattern = png_img.scaled_pattern(1.5)
+        change(png_img)
+        assert png_img.scaled_pattern(1.5) is not pattern
+
+    def test_scaled_pattern_not_copied(self, png_img):
+        pattern = png_img.scaled_pattern(1.5)
+        assert copy(png_img).scaled_pattern(1.5) is not pattern
 
 
 class TestLoader:

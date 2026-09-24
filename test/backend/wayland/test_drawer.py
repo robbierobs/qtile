@@ -134,3 +134,19 @@ def test_draw_image_does_not_mutate_resources(svg_img, rgba_pixel_data, drawer):
     # draw_image should not mutate the original's resources
     assert svg_img._resources[0].width == original_resource_width
     assert svg_img._resources[0].height == original_resource_height
+
+
+def test_draw_image_decodes_once(svg_img, drawer, monkeypatch):
+    """Widgets draw the same image on every redraw; decoding it each time stalls
+    the event loop"""
+    img0 = copy(svg_img)
+    svg_img.resize(height=16)
+    d, image_surface = drawer
+    # A previous draw (or a widget preparing the image) decoded it
+    svg_img.scaled_pattern(d.output_scale)
+    decode = Mock(wraps=images.get_cairo_surface)
+    monkeypatch.setattr(images, "get_cairo_surface", decode)
+    d.draw_image(svg_img)
+    d._draw()
+    decode.assert_not_called()
+    assert bytes(img0.surface.get_data()) == bytes(image_surface.get_data())

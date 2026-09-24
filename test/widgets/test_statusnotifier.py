@@ -186,10 +186,12 @@ def test_statusnotifier_decodes_icons_off_event_loop(manager_nospawn, sni_config
     @Retry(ignore_exceptions=(AssertionError,))
     def decoded():
         assert widget.eval("self._decode_threads") == "[False]"
-        # The drawn icon is the cached one, already decoded
+        # The drawn icon is the cached one, already decoded at the size
+        # draw_image paints it
         assert (
             widget.eval(
-                "(lambda w: all(images is item.images and hasattr(icon, '_pattern')"
+                "(lambda w: all(images is item.images"
+                " and '_pattern' in icon._scaled[1].__dict__"
                 " for item in w.available_icons"
                 " for images, icon in [w._ready_icons[id(item)]]))(self)"
             )

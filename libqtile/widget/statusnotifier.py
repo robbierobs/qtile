@@ -161,7 +161,8 @@ class StatusNotifier(base._Widget):
         # Get the icon at its scaled size or larger (if possible)
         icon = item.build_icon(size)
         icon.resize(height=self.icon_size)
-        icon.pattern  # noqa: B018 - decodes the image and caches the result
+        # Decode it at the size draw_image paints it, which caches the result
+        icon.scaled_pattern(self.drawer.output_scale)
         return icon
 
     def _icon_prepared(self, item, images, size, future):
