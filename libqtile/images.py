@@ -208,6 +208,7 @@ class Img:
         new._resources = [copy(r) for r in self._resources]
         new.__dict__.pop("_surface", None)
         new.__dict__.pop("_pattern", None)
+        new.__dict__.pop("_scaled", None)
         return new
 
     def _common_init(self, backend, name="", path=""):
@@ -244,12 +245,15 @@ class Img:
         return img
 
     def _reset(self):
-        if hasattr(self, "surface"):
-            self.surface.finish()
+        # Check the cache attributes, not the properties: reading those would
+        # decode the image only to throw it away
+        if "_surface" in self.__dict__:
+            self._surface.finish()
             del self.surface
-        if hasattr(self, "pattern"):
-            # patterns do not need to be finish()ed, only surfaces do
-            del self.pattern
+        # patterns do not need to be finish()ed, only surfaces do
+        self.__dict__.pop("_pattern", None)
+        # Not finish()ed: a drawer may still hold its pattern until it next renders
+        self.__dict__.pop("_scaled", None)
 
     @property
     def default_surface(self):
@@ -397,6 +401,24 @@ class Img:
             del self._pattern
         except AttributeError:
             pass
+
+    def scaled_pattern(self, factor: float):
+        """The pattern at `factor` times the image's size, for drawing on a HiDPI
+        output. It's built on a copy, so the image itself isn't changed, and the
+        copy is kept until the image changes: decoding the image again on every
+        draw stalls the event loop."""
+        try:
+            cached_factor, scaled = self._scaled
+            if cached_factor == factor:
+                return scaled.pattern
+        except AttributeError:
+            pass
+        scaled = copy(self)
+        applied_scale = self.width / self.default_size.width
+        combined_scale = applied_scale * factor
+        scaled.scale(combined_scale, combined_scale)
+        self._scaled = (factor, scaled)
+        return scaled.pattern
 
     def __repr__(self):
         return f"<{self.__class__.__name__}: {self.name!r}, {self.width}x{self.height}@{self.theta:.1f}deg, {self.path!r}>"

@@ -3,7 +3,6 @@ from __future__ import annotations
 import collections
 import math
 import typing
-from copy import copy
 
 import cairocffi
 
@@ -337,13 +336,7 @@ class Drawer:
         return getattr(self._win, "scale", 1)
 
     def draw_image(self, img: Img, offsetx: int = 0, offsety: int = 0) -> None:
-        # Some widgets cache images, so perform the following operations on a copy
-        img = copy(img)
-
-        applied_scale = img.width / img.default_size.width
-        combined_scale = applied_scale * self.output_scale
-        img.scale(combined_scale, combined_scale)
-        pattern = img.pattern
+        pattern = img.scaled_pattern(self.output_scale)
 
         # If the image has been scaled for HiDPI, we downscale here for
         # compositing. Quality isn't degraded because the context uses a
