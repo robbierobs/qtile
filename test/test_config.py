@@ -211,3 +211,40 @@ def test_generate_screens_serial_matching(manager_nospawn, minimal_conf_noscreen
     assert manager_nospawn.c.screen[0].info()["serial"] == "monitor_left"
     assert manager_nospawn.c.screen[1].bar["top"].widget["textbox"].get() == "right_config"
     assert manager_nospawn.c.screen[1].info()["serial"] == "monitor_right"
+
+
+def test_generate_screens_moved_outputs_drop_old_bars(
+    manager_nospawn, minimal_conf_noscreen, monkeypatch, tmp_path
+):
+    # When outputs move (e.g. kanshi applying a layout after startup),
+    # generate_screens makes new Screens that compare equal to the old ones,
+    # since Output ignores geometry. The old Screens' bars must still go.
+    def gen_screens(outputs: list[Output]) -> list[Screen]:
+        return [make_screen(text=o.port) for o in outputs]
+
+    minimal_conf_noscreen.generate_screens = staticmethod(gen_screens)
+
+    moved = tmp_path / "moved"
+
+    def outputs(self) -> list[Output]:
+        if moved.exists():
+            return [
+                Output("DP-1", None, None, "serial_a", ScreenRect(0, 0, 800, 600)),
+                Output("DP-2", None, None, "serial_b", ScreenRect(800, 0, 800, 600)),
+            ]
+        return [
+            Output("DP-2", None, None, "serial_b", ScreenRect(0, 0, 800, 600)),
+            Output("DP-1", None, None, "serial_a", ScreenRect(800, 0, 800, 600)),
+        ]
+
+    monkeypatch.setattr(
+        f"libqtile.backend.{manager_nospawn.backend.name}.core.Core.get_output_info", outputs
+    )
+    manager_nospawn.start(minimal_conf_noscreen)
+    assert len(manager_nospawn.c.internal_windows()) == 2
+
+    moved.touch()
+    manager_nospawn.c.reconfigure_screens()
+
+    assert len(manager_nospawn.c.internal_windows()) == 2
+    assert manager_nospawn.c.screen[0].bar["top"].widget["textbox"].get() == "DP-1"
