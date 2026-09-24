@@ -105,6 +105,10 @@ class _Descriptor:
 
 class _Resetter(_Descriptor):
     def __set__(self, obj, value):
+        # Resetting discards the surface, which then has to be decoded again. Widgets
+        # re-apply the same size on every draw, so only reset when it changes.
+        if self.__get__(obj, type(obj)) == value:
+            return
         super().__set__(obj, value)
         obj._reset()
 
