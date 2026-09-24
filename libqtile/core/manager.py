@@ -521,6 +521,14 @@ class Qtile(CommandObject):
 
         self.screens = new_screens
 
+        # Likewise current_screen: left on an old Screen, it keeps the output's
+        # old geometry, which matches no output, so e.g. layer surfaces (launchers,
+        # notifications) that ask for the current output get none.
+        if not any(self.current_screen is s for s in new_screens):
+            self.current_screen = next(
+                (s for s in new_screens if s == self.current_screen), new_screens[0]
+            )
+
     @expose_command()
     def reconfigure_screens(self, *_: list[Any], **__: dict[Any, Any]) -> None:
         """
