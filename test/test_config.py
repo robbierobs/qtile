@@ -248,3 +248,43 @@ def test_generate_screens_moved_outputs_drop_old_bars(
 
     assert len(manager_nospawn.c.internal_windows()) == 2
     assert manager_nospawn.c.screen[0].bar["top"].widget["textbox"].get() == "DP-1"
+
+
+def test_generate_screens_moved_outputs_move_groups(
+    manager_nospawn, minimal_conf_noscreen, monkeypatch, tmp_path
+):
+    # As above, but for groups: each group must end up on the new Screen
+    # object, not the old one it compares equal to, or it keeps laying out
+    # its windows at the output's old position.
+    def gen_screens(outputs: list[Output]) -> list[Screen]:
+        return [Screen() for _ in outputs]
+
+    minimal_conf_noscreen.generate_screens = staticmethod(gen_screens)
+
+    moved = tmp_path / "moved"
+
+    def outputs(self) -> list[Output]:
+        if moved.exists():
+            return [
+                Output("HDMI-A-1", None, None, "serial_b", ScreenRect(200, 600, 800, 600)),
+                Output("DP-1", None, None, "serial_a", ScreenRect(0, 0, 1200, 600)),
+            ]
+        return [
+            Output("HDMI-A-1", None, None, "serial_b", ScreenRect(0, 0, 800, 600)),
+            Output("DP-1", None, None, "serial_a", ScreenRect(800, 0, 1200, 600)),
+        ]
+
+    monkeypatch.setattr(
+        f"libqtile.backend.{manager_nospawn.backend.name}.core.Core.get_output_info", outputs
+    )
+    manager_nospawn.start(minimal_conf_noscreen)
+
+    moved.touch()
+    manager_nospawn.c.reconfigure_screens()
+
+    assert manager_nospawn.c.eval("all(s.group.screen is s for s in self.screens)") == "True"
+    assert manager_nospawn.c.eval("len({s.group.name for s in self.screens})") == "2"
+    geometry = manager_nospawn.c.eval(
+        "[(g.screen.x, g.screen.y) for g in self.groups if g.screen]"
+    )
+    assert sorted(eval(geometry)) == [(0, 0), (200, 600)]

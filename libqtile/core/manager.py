@@ -490,6 +490,12 @@ class Qtile(CommandObject):
                 # a group anyway.
                 scr.group = grp
 
+            if grp.screen is not None and grp.screen is not scr and grp.screen == scr:
+                # grp is on an old Screen for this output (generate_screens makes
+                # new ones). It compares equal, so set_group would treat grp as
+                # already here and leave it laying out at the old geometry.
+                grp.screen = None
+
             scr._configure(
                 self,
                 i,
