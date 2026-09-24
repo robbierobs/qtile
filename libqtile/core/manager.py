@@ -506,8 +506,11 @@ class Qtile(CommandObject):
         if len(new_screens) == 0:
             new_screens.append(Screen())
 
+        # Compare by identity: Screen.__eq__ matches on the output, so a new
+        # Screen from generate_screens for the same output would keep the old
+        # one's bars alive.
         for screen in self.screens:
-            if screen not in new_screens:
+            if not any(screen is s for s in new_screens):
                 screen.finalize_gaps()
 
         self.screens = new_screens
