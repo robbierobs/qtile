@@ -351,6 +351,18 @@ class TestImgResize:
         png_img.resize(height=height)
         assert png_img.height == 1
 
+    def test_resize_same_size_keeps_surface(self, png_img):
+        """Re-applying the same size, as widgets do on every draw, must not decode again"""
+        png_img.resize(height=16)
+        surface = png_img.surface
+        png_img.resize(height=16)
+        png_img.theta = png_img.theta
+        assert png_img.surface is surface
+
+        png_img.resize(height=20)
+        assert png_img.surface is not surface
+        assert png_img.surface.get_height() == 20
+
 
 class TestLoader:
     @pytest.fixture(scope="function")
