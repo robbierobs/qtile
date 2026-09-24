@@ -288,3 +288,43 @@ def test_generate_screens_moved_outputs_move_groups(
         "[(g.screen.x, g.screen.y) for g in self.groups if g.screen]"
     )
     assert sorted(eval(geometry)) == [(0, 0), (200, 600)]
+
+
+def test_generate_screens_moved_outputs_move_current_screen(
+    manager_nospawn, minimal_conf_noscreen, monkeypatch, tmp_path
+):
+    # As above, for current_screen: left on the old Screen it has the output's
+    # old geometry, and the Wayland backend finds no output there to put layer
+    # surfaces (launchers) on.
+    def gen_screens(outputs: list[Output]) -> list[Screen]:
+        return [Screen() for _ in outputs]
+
+    minimal_conf_noscreen.generate_screens = staticmethod(gen_screens)
+
+    moved = tmp_path / "moved"
+
+    def outputs(self) -> list[Output]:
+        if moved.exists():
+            return [
+                Output("HDMI-A-1", None, None, "serial_b", ScreenRect(200, 600, 800, 600)),
+                Output("DP-1", None, None, "serial_a", ScreenRect(0, 0, 1200, 600)),
+            ]
+        return [
+            Output("HDMI-A-1", None, None, "serial_b", ScreenRect(0, 0, 800, 600)),
+            Output("DP-1", None, None, "serial_a", ScreenRect(800, 0, 1200, 600)),
+        ]
+
+    monkeypatch.setattr(
+        f"libqtile.backend.{manager_nospawn.backend.name}.core.Core.get_output_info", outputs
+    )
+    manager_nospawn.start(minimal_conf_noscreen)
+    manager_nospawn.c.to_screen(1)
+
+    moved.touch()
+    manager_nospawn.c.reconfigure_screens()
+
+    assert (
+        manager_nospawn.c.eval("id(self.current_screen) in set(map(id, self.screens))") == "True"
+    )
+    info = manager_nospawn.c.screen.info()
+    assert (info["port"], info["x"], info["y"]) == ("DP-1", 0, 0)
