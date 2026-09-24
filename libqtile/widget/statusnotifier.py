@@ -1,4 +1,5 @@
 from libqtile import bar
+from libqtile.log_utils import logger
 from libqtile.widget import base
 from libqtile.widget.helpers.status_notifier import StatusNotifierItem, has_xdg, host
 
@@ -38,6 +39,17 @@ class StatusNotifier(base._Widget):
     def __init__(self, **config):
         base._Widget.__init__(self, bar.CALCULATED, **config)
         self.add_defaults(StatusNotifier.defaults)
+        # Icons are decoded in a worker thread: decoding an SVG or a large
+        # pixmap in the event loop stalls input and rendering, and any bar
+        # redraw can land on an icon that just changed. Keyed by id(item)
+        # (items aren't hashable). item.images is replaced whenever the app
+        # sends a new icon, so it identifies which icon a decode belongs to:
+        #   _ready_icons: id -> (item.images, decoded icon)
+        #   _preparing:   id -> item.images being decoded
+        #   _failed:      id -> item.images whose decode failed (not retried)
+        self._ready_icons: dict[int, tuple[dict, object]] = {}
+        self._preparing: dict[int, dict] = {}
+        self._failed: dict[int, dict] = {}
         self.add_callbacks(
             {
                 "Button1": self.activate,
@@ -106,17 +118,70 @@ class StatusNotifier(base._Widget):
 
         # Scale icon up by output scale factor
         scaled_icon_size = int(self.icon_size * self.drawer.output_scale)
-        for item in self.available_icons:
-            # Get the icon at its scaled size or larger (if possible)
-            icon = item.get_icon(scaled_icon_size)
-            icon.resize(height=self.icon_size)
-            if self.bar.horizontal:
-                self._draw_icon(icon, xoffset, yoffset)
-            else:
-                self._draw_icon(icon, yoffset, xoffset)
+        items = self.available_icons
+        current = {id(item) for item in items}
+        for state in (self._ready_icons, self._preparing, self._failed):
+            for key in state.keys() - current:
+                del state[key]
+
+        for item in items:
+            # Until its first decode finishes an item's slot stays empty
+            icon = self._ready_icon(item, scaled_icon_size)
+            if icon is not None:
+                if self.bar.horizontal:
+                    self._draw_icon(icon, xoffset, yoffset)
+                else:
+                    self._draw_icon(icon, yoffset, xoffset)
             xoffset += self.icon_size + self.padding
 
         self.draw_at_default_position()
+
+    def _ready_icon(self, item, size):
+        """The item's decoded icon. While a new one decodes, the previous one."""
+        key = id(item)
+        images, icon = self._ready_icons.get(key, (None, None))
+        if images is item.images and size in item.images:
+            return icon
+        if (
+            self._preparing.get(key) is not item.images
+            and self._failed.get(key) is not item.images
+        ):
+            self._preparing[key] = item.images
+            future = self.qtile.run_in_executor(self._prepare_icon, item, size)
+            future.add_done_callback(
+                lambda f, item=item, images=item.images: self._icon_prepared(
+                    item, images, size, f
+                )
+            )
+        return icon
+
+    def _prepare_icon(self, item, size):
+        """Runs in a worker thread: build the icon and decode it at the size
+        it's drawn at."""
+        # Get the icon at its scaled size or larger (if possible)
+        icon = item.build_icon(size)
+        icon.resize(height=self.icon_size)
+        icon.pattern  # noqa: B018 - decodes the image and caches the result
+        return icon
+
+    def _icon_prepared(self, item, images, size, future):
+        key = id(item)
+        if self._preparing.get(key) is images:
+            del self._preparing[key]
+        if self.finalized:
+            return
+        try:
+            icon = future.result()
+        except Exception:
+            logger.exception("Error decoding icon for StatusNotifierItem %s", item.service)
+            self._failed[key] = images
+            return
+        # The app may have sent another icon meanwhile; then this one is stale
+        # and the redraw below starts decoding the new one
+        if images is item.images:
+            images[size] = icon
+            self._ready_icons[key] = (images, icon)
+        self.bar.draw()
 
     def activate(self):
         """Primary action when clicking on an icon"""

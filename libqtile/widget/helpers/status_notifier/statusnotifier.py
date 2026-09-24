@@ -414,6 +414,16 @@ class StatusNotifierItem:  # noqa: E303
         if size in self.images:
             return self.images[size]
 
+        icon = self.build_icon(size)
+
+        # Store the image for next time
+        self.images[size] = icon
+
+        return icon
+
+    def build_icon(self, size):
+        """Like get_icon, but always builds the icon and doesn't cache it, so
+        it can run outside the event loop."""
         # Create a blank image to hold the icon
         icon = Img.blank(cairocffi.FORMAT_ARGB32, size, size)
 
@@ -455,9 +465,6 @@ class StatusNotifierItem:  # noqa: E303
             icon = base_icon.paste(overlay)
         else:
             icon = base_icon
-
-        # Store the image for next time
-        self.images[size] = icon
 
         return icon
 
