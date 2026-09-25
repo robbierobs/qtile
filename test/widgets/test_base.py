@@ -1,3 +1,5 @@
+from unittest.mock import Mock
+
 import pytest
 
 import libqtile.bar
@@ -247,3 +249,27 @@ def test_scroll_fixed_width(manager):
 
     # Widget width is fixed at set width
     assert widget.info()["width"] == 200
+
+
+class _FakeLayout:
+    def __init__(self):
+        self.text = ""
+
+    @property
+    def width(self):
+        return 10 * len(self.text)
+
+
+@pytest.mark.parametrize(
+    "width,bar_draws", [(libqtile.bar.STRETCH, 0), (libqtile.bar.CALCULATED, 1)]
+)
+def test_text_update_width_change_redraws_bar_unless_stretch(width, bar_draws):
+    widget = TextBox("short", width=width)
+    widget.layout = _FakeLayout()
+    widget.bar = Mock(horizontal=True)
+    widget.draw = Mock()
+
+    widget.update("a much longer window title")
+
+    assert widget.bar.draw.call_count == bar_draws
+    assert widget.draw.call_count == 1 - bar_draws
