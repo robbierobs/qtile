@@ -886,6 +886,18 @@ bool qw_server_init(struct qw_server *server) {
         return false;
     }
 
+    // ext-image-copy-capture is preferred over wlr-screencopy by current clients
+    // (xdg-desktop-portal-wlr >= 0.8.3 stalls after one frame on wlr-screencopy)
+    if (wlr_ext_image_copy_capture_manager_v1_create(server->display, 1) == NULL) {
+        wlr_log(WLR_ERROR, "failed to create image copy capture manager");
+        return false;
+    }
+
+    if (wlr_ext_output_image_capture_source_manager_v1_create(server->display, 1) == NULL) {
+        wlr_log(WLR_ERROR, "failed to create output image capture source manager");
+        return false;
+    }
+
     if (wlr_data_control_manager_v1_create(server->display) == NULL) {
         wlr_log(WLR_ERROR, "failed to create data control manager");
         return false;
