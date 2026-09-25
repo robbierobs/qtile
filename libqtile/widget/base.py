@@ -750,9 +750,12 @@ class _TextBox(_Widget):
         old_width = self.layout.width
         self.text = text
 
-        # If our width hasn't changed, we just draw ourselves. Otherwise,
-        # we draw the whole bar.
-        if self.layout.width == old_width and (self.bar.horizontal or self.rotate):
+        # If our length can't have changed, we just draw ourselves. Otherwise,
+        # we draw the whole bar. A stretch widget's length is set by the bar,
+        # not by its text.
+        if self.length_type == bar.STRETCH or (
+            self.layout.width == old_width and (self.bar.horizontal or self.rotate)
+        ):
             self.draw()
         else:
             self.bar.draw()
