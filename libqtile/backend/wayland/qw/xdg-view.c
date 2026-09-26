@@ -107,6 +107,7 @@ static void qw_xdg_view_handle_unmap(struct wl_listener *listener, void *data) {
     xdg_view->base.server->unmanage_view_cb((struct qw_view *)&xdg_view->base,
                                             xdg_view->base.server->cb_data);
     qw_xdg_view_hide(xdg_view);
+    qw_view_ext_ftl_handle_destroy(&xdg_view->base);
 
     wl_list_remove(&xdg_view->request_maximize.link);
     wl_list_remove(&xdg_view->request_fullscreen.link);
@@ -133,7 +134,9 @@ static void qw_xdg_view_handle_destroy(struct wl_listener *listener, void *data)
 
     // Destroy the foreign toplevel manager and listeners
     qw_view_ftl_manager_handle_destroy(&xdg_view->base);
+    qw_view_ext_ftl_handle_destroy(&xdg_view->base);
 
+    qw_view_image_capture_finish(&xdg_view->base);
     wlr_scene_node_destroy(&xdg_view->base.content_tree->node);
 
     free(xdg_view);
@@ -359,6 +362,7 @@ static void qw_xdg_view_handle_set_title(struct wl_listener *listener, void *dat
     if (xdg_view->base.ftl_handle != NULL && xdg_view->base.title != NULL) {
         wlr_foreign_toplevel_handle_v1_set_title(xdg_view->base.ftl_handle, xdg_view->base.title);
     }
+    qw_view_ext_ftl_handle_update(&xdg_view->base);
     // callback is not intialised until qtile window is initialised
     if (xdg_view->base.set_title_cb && xdg_view->base.title) {
         xdg_view->base.set_title_cb(xdg_view->base.title, xdg_view->base.cb_data);
@@ -373,6 +377,7 @@ static void qw_xdg_view_handle_set_app_id(struct wl_listener *listener, void *da
     if (xdg_view->base.ftl_handle != NULL && xdg_view->base.app_id != NULL) {
         wlr_foreign_toplevel_handle_v1_set_app_id(xdg_view->base.ftl_handle, xdg_view->base.app_id);
     }
+    qw_view_ext_ftl_handle_update(&xdg_view->base);
     // callback is not intialised until qtile window is initialised
     if (xdg_view->base.set_app_id_cb && xdg_view->base.app_id) {
         xdg_view->base.set_app_id_cb(xdg_view->base.app_id, xdg_view->base.cb_data);
@@ -436,12 +441,14 @@ static void qw_xdg_popup_handle_reposition(struct wl_listener *listener, void *d
 // Forward declaration
 static struct qw_xdg_popup *qw_server_xdg_popup_new(struct wlr_xdg_popup *wlr_popup,
                                                     struct qw_xdg_view *xdg_view,
-                                                    struct wlr_scene_tree *parent);
+                                                    struct wlr_scene_tree *parent,
+                                                    struct wlr_scene_tree *image_capture_parent);
 
 static void qw_xdg_popup_handle_new_popup(struct wl_listener *listener, void *data) {
     struct qw_xdg_popup *popup = wl_container_of(listener, popup, new_popup);
     struct wlr_xdg_popup *wlr_popup = data;
-    qw_server_xdg_popup_new(wlr_popup, popup->xdg_view, popup->xdg_surface_tree);
+    qw_server_xdg_popup_new(wlr_popup, popup->xdg_view, popup->xdg_surface_tree,
+                            popup->image_capture_tree);
 }
 
 static void qw_xdg_view_handle_new_popup(struct wl_listener *listener, void *data) {
@@ -450,7 +457,8 @@ static void qw_xdg_view_handle_new_popup(struct wl_listener *listener, void *dat
     struct wlr_xdg_popup *wlr_popup = data;
 
     struct qw_xdg_popup *popup = qw_server_xdg_popup_new(
-        wlr_popup, xdg_view, server->scene_windows_layers[LAYER_BRINGTOFRONT]);
+        wlr_popup, xdg_view, server->scene_windows_layers[LAYER_BRINGTOFRONT],
+        xdg_view->image_capture_tree);
     if (popup == NULL) {
         return;
     }
@@ -506,6 +514,8 @@ static void qw_xdg_view_handle_map(struct wl_listener *listener, void *data) {
             }
         }
     }
+
+    qw_view_ext_ftl_handle_create(&xdg_view->base);
 
     xdg_view->base.server->manage_view_cb((struct qw_view *)&xdg_view->base,
                                           xdg_view->base.server->cb_data);
@@ -622,7 +632,8 @@ static bool qw_xdg_view_has_fixed_size(void *self) {
 
 static struct qw_xdg_popup *qw_server_xdg_popup_new(struct wlr_xdg_popup *wlr_popup,
                                                     struct qw_xdg_view *xdg_view,
-                                                    struct wlr_scene_tree *parent) {
+                                                    struct wlr_scene_tree *parent,
+                                                    struct wlr_scene_tree *image_capture_parent) {
     struct wlr_xdg_surface *surface = wlr_popup->base;
 
     struct qw_xdg_popup *popup = calloc(1, sizeof(struct qw_xdg_popup));
@@ -648,6 +659,12 @@ static struct qw_xdg_popup *qw_server_xdg_popup_new(struct wlr_xdg_popup *wlr_po
         wlr_scene_node_destroy(&popup->scene_tree->node);
         free(popup);
         return NULL;
+    }
+
+    // Mirror the popup into the view's capture scene, where wlroots positions it relative to its
+    // parent, so menus show up when the window is shared. It is destroyed with the xdg_surface.
+    if (image_capture_parent != NULL) {
+        popup->image_capture_tree = wlr_scene_xdg_surface_create(image_capture_parent, surface);
     }
 
     popup->base.skip_taskbar = true;
@@ -702,6 +719,12 @@ void qw_server_xdg_view_new(struct qw_server *server, struct wlr_xdg_toplevel *x
     xdg_view->scene_tree =
         wlr_scene_xdg_surface_create(xdg_view->base.content_tree, xdg_toplevel->base);
     xdg_toplevel->base->data = xdg_view;
+
+    // Mirror the surface into a private scene for per-window capture
+    if (qw_view_image_capture_init(&xdg_view->base)) {
+        xdg_view->image_capture_tree = wlr_scene_xdg_surface_create(
+            &xdg_view->base.image_capture_scene->tree, xdg_toplevel->base);
+    }
 
     // Assign function pointers for base view operations
     xdg_view->base.get_tree_node = qw_xdg_view_get_tree_node;

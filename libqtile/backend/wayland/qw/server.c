@@ -4,6 +4,8 @@
 #include <wlr/backend/session.h>
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/interfaces/wlr_pointer.h>
+#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
+#include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <wlr/types/wlr_output_management_v1.h>
@@ -89,6 +91,7 @@ void qw_server_finalize(struct qw_server *server) {
     wl_list_remove(&server->new_idle_inhibitor.link);
     wl_list_remove(&server->set_output_power_mode.link);
     wl_list_remove(&server->new_shortcut_inhibitor.link);
+    wl_list_remove(&server->new_ext_ftl_capture_request.link);
 
 #if WLR_HAS_XWAYLAND
     wl_list_remove(&server->new_xwayland_surface.link);
@@ -429,6 +432,31 @@ void qw_server_handle_virtual_pointer(struct wl_listener *listener, void *data) 
     if (event->suggested_output != NULL) {
         wlr_cursor_map_input_to_output(server->cursor->cursor, device, event->suggested_output);
     }
+}
+
+// A client wants to capture a single window (ext-foreign-toplevel-image-capture-source).
+// Capture from the view's private mirror scene rather than the main scene.
+static void qw_server_handle_new_ext_ftl_capture_request(struct wl_listener *listener, void *data) {
+    UNUSED(listener);
+    struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request *request = data;
+    struct qw_view *view = request->toplevel_handle->data;
+    if (view == NULL || view->image_capture_scene == NULL) {
+        return;
+    }
+
+    if (view->image_capture_source == NULL) {
+        struct qw_server *server = view->server;
+        view->image_capture_source = wlr_ext_image_capture_source_v1_create_with_scene_node(
+            &view->image_capture_scene->tree.node, server->event_loop, server->allocator,
+            server->renderer);
+        if (view->image_capture_source == NULL) {
+            wlr_log(WLR_ERROR, "failed to create toplevel image capture source");
+            return;
+        }
+    }
+
+    wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request_accept(
+        request, view->image_capture_source);
 }
 
 // Handle new XDG toplevel window creation
@@ -1090,6 +1118,24 @@ bool qw_server_init(struct qw_server *server) {
         wlr_log(WLR_ERROR, "failed to create foreign toplevel manager");
         return false;
     }
+
+    // ext-foreign-toplevel-list and per-toplevel capture sources, used by
+    // xdg-desktop-portal-wlr to share a single window
+    server->ext_ftl_list = wlr_ext_foreign_toplevel_list_v1_create(server->display, 1);
+    if (server->ext_ftl_list == NULL) {
+        wlr_log(WLR_ERROR, "failed to create ext foreign toplevel list");
+        return false;
+    }
+
+    server->ext_ftl_capture_mgr =
+        wlr_ext_foreign_toplevel_image_capture_source_manager_v1_create(server->display, 1);
+    if (server->ext_ftl_capture_mgr == NULL) {
+        wlr_log(WLR_ERROR, "failed to create foreign toplevel image capture source manager");
+        return false;
+    }
+    server->new_ext_ftl_capture_request.notify = qw_server_handle_new_ext_ftl_capture_request;
+    wl_signal_add(&server->ext_ftl_capture_mgr->events.new_request,
+                  &server->new_ext_ftl_capture_request);
 
     server->idle_inhibit_manager = wlr_idle_inhibit_v1_create(server->display);
     if (server->idle_inhibit_manager == NULL) {

@@ -560,6 +560,7 @@ static void qw_xwayland_view_handle_set_title(struct wl_listener *listener, void
         wlr_foreign_toplevel_handle_v1_set_title(xwayland_view->base.ftl_handle,
                                                  xwayland_view->base.title);
     }
+    qw_view_ext_ftl_handle_update(&xwayland_view->base);
     if (xwayland_view->base.set_title_cb && xwayland_view->base.title) {
         xwayland_view->base.set_title_cb(xwayland_view->base.title, xwayland_view->base.cb_data);
     }
@@ -570,10 +571,11 @@ static void qw_xwayland_view_handle_set_class(struct wl_listener *listener, void
     struct qw_xwayland_view *xwayland_view = wl_container_of(listener, xwayland_view, set_class);
     struct wlr_xwayland_surface *qw_xsurface = xwayland_view->xwayland_surface;
     xwayland_view->base.app_id = qw_xsurface->class;
-    if (xwayland_view->base.ftl_handle != NULL && qw_xsurface->title != NULL) {
+    if (xwayland_view->base.ftl_handle != NULL && qw_xsurface->class != NULL) {
         wlr_foreign_toplevel_handle_v1_set_app_id(xwayland_view->base.ftl_handle,
                                                   xwayland_view->base.app_id);
     }
+    qw_view_ext_ftl_handle_update(&xwayland_view->base);
     if (xwayland_view->base.set_app_id_cb && xwayland_view->base.app_id) {
         xwayland_view->base.set_app_id_cb(xwayland_view->base.app_id, xwayland_view->base.cb_data);
     }
@@ -588,6 +590,12 @@ static void qw_xwayland_view_handle_map(struct wl_listener *listener, void *data
     // Create a subsurface tree for this view under the content tree.
     xwayland_view->scene_tree = wlr_scene_subsurface_tree_create(xwayland_view->base.content_tree,
                                                                  xwayland_surface->surface);
+
+    // Mirror the surface into the view's private scene for per-window capture
+    if (xwayland_view->base.image_capture_scene != NULL) {
+        xwayland_view->image_capture_tree = wlr_scene_subsurface_tree_create(
+            &xwayland_view->base.image_capture_scene->tree, xwayland_surface->surface);
+    }
 
     // Reparent layer if view has keep_above or keep_below set
     if (xwayland_surface->above) {
@@ -631,6 +639,8 @@ static void qw_xwayland_view_handle_map(struct wl_listener *listener, void *data
         }
     }
 
+    qw_view_ext_ftl_handle_create(&xwayland_view->base);
+
     // Notify the server that this view is ready to be managed (added to layout/focus system).
     xwayland_view->base.server->manage_view_cb((struct qw_view *)&xwayland_view->base,
                                                xwayland_view->base.server->cb_data);
@@ -668,6 +678,12 @@ static void qw_xwayland_view_handle_unmap(struct wl_listener *listener, void *da
     xwayland_view->base.server->unmanage_view_cb((struct qw_view *)&xwayland_view->base,
                                                  xwayland_view->base.server->cb_data);
     qw_xwayland_view_hide(xwayland_view);
+    qw_view_ext_ftl_handle_destroy(&xwayland_view->base);
+
+    if (xwayland_view->image_capture_tree != NULL) {
+        wlr_scene_node_destroy(&xwayland_view->image_capture_tree->node);
+        xwayland_view->image_capture_tree = NULL;
+    }
 
     wl_list_remove(&xwayland_view->commit.link);
     wl_list_remove(&xwayland_view->request_fullscreen.link);
@@ -817,6 +833,8 @@ static void qw_xwayland_view_handle_destroy(struct wl_listener *listener, void *
     wl_list_remove(&xwayland_view->request_below.link);
     wl_list_remove(&xwayland_view->request_skip_taskbar.link);
     qw_view_ftl_manager_handle_destroy(&xwayland_view->base);
+    qw_view_ext_ftl_handle_destroy(&xwayland_view->base);
+    qw_view_image_capture_finish(&xwayland_view->base);
     wlr_scene_node_destroy(&xwayland_view->base.content_tree->node);
 
     free(xwayland_view);
@@ -911,6 +929,7 @@ void qw_server_xwayland_view_new(struct qw_server *server,
         wlr_scene_tree_create(server->scene_windows_layers[LAYER_LAYOUT]);
     xwayland_view->base.content_tree->node.data = xwayland_view;
     xwayland_view->initial_commit = true;
+    qw_view_image_capture_init(&xwayland_view->base);
 
     wl_signal_add(&xwayland_surface->events.destroy, &xwayland_view->destroy);
     xwayland_view->destroy.notify = qw_xwayland_view_handle_destroy;

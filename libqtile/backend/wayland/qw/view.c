@@ -364,6 +364,68 @@ void qw_view_ftl_manager_handle_destroy(struct qw_view *view) {
     view->ftl_handle = NULL;
 }
 
+void qw_view_ext_ftl_handle_create(struct qw_view *view) {
+    if (view->ext_ftl_handle != NULL) {
+        return;
+    }
+
+    struct wlr_ext_foreign_toplevel_handle_v1_state state = {
+        .title = view->title,
+        .app_id = view->app_id,
+    };
+    view->ext_ftl_handle =
+        wlr_ext_foreign_toplevel_handle_v1_create(view->server->ext_ftl_list, &state);
+    if (view->ext_ftl_handle == NULL) {
+        wlr_log(WLR_ERROR, "failed to create ext foreign toplevel handle");
+        return;
+    }
+    // Lets capture requests find the view from the handle
+    view->ext_ftl_handle->data = view;
+}
+
+void qw_view_ext_ftl_handle_update(struct qw_view *view) {
+    if (view->ext_ftl_handle == NULL) {
+        return;
+    }
+
+    struct wlr_ext_foreign_toplevel_handle_v1_state state = {
+        .title = view->title,
+        .app_id = view->app_id,
+    };
+    wlr_ext_foreign_toplevel_handle_v1_update_state(view->ext_ftl_handle, &state);
+}
+
+void qw_view_ext_ftl_handle_destroy(struct qw_view *view) {
+    if (view->ext_ftl_handle == NULL) {
+        return;
+    }
+
+    wlr_ext_foreign_toplevel_handle_v1_destroy(view->ext_ftl_handle);
+    view->ext_ftl_handle = NULL;
+}
+
+bool qw_view_image_capture_init(struct qw_view *view) {
+    view->image_capture_scene = wlr_scene_create();
+    if (view->image_capture_scene == NULL) {
+        wlr_log(WLR_ERROR, "failed to create image capture scene");
+        return false;
+    }
+    // Xwayland stacking follows the main scene, not this mirror
+    view->image_capture_scene->restack_xwayland_surfaces = false;
+    return true;
+}
+
+void qw_view_image_capture_finish(struct qw_view *view) {
+    if (view->image_capture_scene == NULL) {
+        return;
+    }
+
+    // The capture source listens for its node's destruction and frees itself
+    wlr_scene_node_destroy(&view->image_capture_scene->tree.node);
+    view->image_capture_scene = NULL;
+    view->image_capture_source = NULL;
+}
+
 // Find which output a view is on
 // If across multiple outputs, return the primary (that most of the view is on) output
 // If offscreen, return NULL

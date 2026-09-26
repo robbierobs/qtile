@@ -23,6 +23,7 @@ struct qw_xdg_view {
     struct qw_view base;
     struct wlr_xdg_toplevel *xdg_toplevel;
     struct wlr_scene_tree *scene_tree;
+    struct wlr_scene_tree *image_capture_tree; // mirror of scene_tree in image_capture_scene
     struct wlr_box geom;
 
     // Listeners for Wayland events on the toplevel surface lifecycle and requests
@@ -52,6 +53,7 @@ struct qw_xdg_popup {
     struct wlr_xdg_popup *wlr_popup;
     struct wlr_scene_tree *scene_tree;
     struct wlr_scene_tree *xdg_surface_tree;
+    struct wlr_scene_tree *image_capture_tree; // mirror of xdg_surface_tree, may be NULL
 
     struct wl_listener surface_commit;
     struct wl_listener new_popup;

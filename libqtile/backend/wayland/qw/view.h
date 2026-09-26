@@ -4,6 +4,8 @@
 #include <cairo/cairo.h>
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_buffer.h>
+#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
+#include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_scene.h>
 
@@ -137,6 +139,13 @@ struct qw_view {
     struct wl_listener ftl_request_fullscreen;
     // ftl output tracking
     struct wl_list ftl_outputs;
+    // ext-foreign-toplevel-list handle, present while the view is mapped
+    struct wlr_ext_foreign_toplevel_handle_v1 *ext_ftl_handle;
+    // Private scene mirroring only this view's surfaces, for per-window screen capture.
+    // Capturing content_tree directly would render the whole main scene over the view's
+    // extents, including other windows and, for hidden views, whatever is shown there.
+    struct wlr_scene *image_capture_scene;
+    struct wlr_ext_image_capture_source_v1 *image_capture_source; // created on first request
 };
 
 void qw_view_reparent(struct qw_view *view, int layer);
@@ -156,6 +165,15 @@ void qw_view_paint_borders(struct qw_view *view, const struct qw_border *borders
 // Create/destroy a foreign toplevel manager handle and listeners
 void qw_view_ftl_manager_handle_create(struct qw_view *view);
 void qw_view_ftl_manager_handle_destroy(struct qw_view *view);
+
+// Create/update/destroy the ext-foreign-toplevel-list handle
+void qw_view_ext_ftl_handle_create(struct qw_view *view);
+void qw_view_ext_ftl_handle_update(struct qw_view *view);
+void qw_view_ext_ftl_handle_destroy(struct qw_view *view);
+
+// Create/destroy the view's private image capture scene
+bool qw_view_image_capture_init(struct qw_view *view);
+void qw_view_image_capture_finish(struct qw_view *view);
 
 struct qw_output *qw_view_get_primary_output(struct qw_view *view);
 
