@@ -269,6 +269,9 @@ struct qw_server {
     struct qw_session_lock *lock;
     struct wlr_scene_tree *lock_tree;
     struct wlr_foreign_toplevel_manager_v1 *ftl_mgr;
+    struct wlr_ext_foreign_toplevel_list_v1 *ext_ftl_list;
+    struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1 *ext_ftl_capture_mgr;
+    struct wl_listener new_ext_ftl_capture_request;
     struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard;
     struct wlr_virtual_pointer_manager_v1 *virtual_pointer;
     struct wl_listener virtual_keyboard_new;

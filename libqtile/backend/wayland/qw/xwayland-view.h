@@ -13,6 +13,7 @@ struct qw_xwayland_view {
 
     struct wlr_scene_tree *scene_tree;
     struct wlr_scene_surface *scene_surface;
+    struct wlr_scene_tree *image_capture_tree; // mirror of scene_tree in image_capture_scene
     struct wlr_box geom;
     struct wlr_xwayland_surface *xwayland_surface;
     bool initial_commit;
