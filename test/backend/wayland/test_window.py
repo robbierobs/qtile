@@ -158,3 +158,30 @@ def test_window_opacity_commands(wmanager):
 
     # Should be firmly clamped at 1.0
     assert wmanager.c.window.info()["opacity"] == pytest.approx(1.0)
+
+
+@bare_config
+def test_wids_are_not_reused(wmanager):
+    pid = new_xdg_client(wmanager, "one")
+    first = wmanager.c.window.info()["id"]
+    wmanager.kill_window(pid)
+
+    pid = new_xdg_client(wmanager, "two")
+    assert wmanager.c.window.info()["id"] != first
+    wmanager.kill_window(pid)
+
+
+@bare_config
+def test_popup_killed_twice_keeps_new_window(wmanager):
+    """A popup's second kill() must not unmanage a window mapped since the first.
+
+    qtile-extras menus are killed on click and again by their mouse-leave timer.
+    """
+    wmanager.c.eval("self._popup = self.core.create_internal(0, 0, 10, 10)")
+    wmanager.c.eval("self._popup.kill()")
+    pid = new_xdg_client(wmanager)
+    wid = wmanager.c.window.info()["id"]
+
+    wmanager.c.eval("self._popup.kill()")
+    assert wid in [w["id"] for w in wmanager.c.windows()]
+    wmanager.kill_window(pid)

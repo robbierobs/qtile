@@ -323,9 +323,10 @@ class Internal(Base, base.Internal):
         if not self._killed:
             self._ptr.kill(self._ptr)
             self._killed = True
-        if self.wid in self.qtile.windows_map:
+        if self.qtile.windows_map.get(self.wid) is self:
             # It will be present during config reloads; absent during shutdown as this
-            # will follow graceful_shutdown
+            # will follow graceful_shutdown. Popups can be killed more than once, so
+            # don't drop another window's entry.
             del self.qtile.windows_map[self.wid]
 
     @expose_command()

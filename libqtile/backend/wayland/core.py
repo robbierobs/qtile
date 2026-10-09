@@ -261,6 +261,7 @@ class Core(base.Core):
         self._output_reserved_space: dict[Screen, tuple[int, int, int, int]] = {}
         self.current_window = None
         self.grabbed_keys: list[tuple[int, int]] = []
+        self._last_wid = 0
         self._userdata = ffi.new_handle(self)
         self.qw.cb_data = self._userdata
         self.qw.keyboard_key_cb = lib.keyboard_key_cb
@@ -310,7 +311,11 @@ class Core(base.Core):
     def new_wid(self) -> int:
         """Get a new unique window ID"""
         assert self.qtile is not None
-        return max(self.qtile.windows_map.keys(), default=0) + 1
+        # Never hand out an ID twice. Windows are found by wid long after they are
+        # gone (a repeated Internal.kill(), a view's stale wid), and a reused one
+        # would find whichever window holds it now.
+        self._last_wid = max(self._last_wid, max(self.qtile.windows_map, default=0)) + 1
+        return self._last_wid
 
     # Callback to fetch qtile config parameters from wayc
     # Add additional parameters as needed (server.h: struct qw_qtile_config)
