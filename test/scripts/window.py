@@ -169,6 +169,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--urgent", dest="urgent", action="store_true", help="Set urgency after delay"
     )
+    parser.add_argument(
+        "--skip-taskbar",
+        dest="skip_taskbar",
+        action="store_true",
+        help="Ask to be skipped by taskbars after delay",
+    )
 
     args = parser.parse_args()
 
@@ -189,6 +195,14 @@ if __name__ == "__main__":
 
         # Time before renaming title
         GLib.timeout_add(500, gtk_set_title)
+
+    if args.skip_taskbar:
+
+        def gtk_set_skip_taskbar(*_):
+            win.set_skip_taskbar_hint(True)
+
+        # After mapping, so X11 sends a _NET_WM_STATE request rather than a property
+        GLib.timeout_add(500, gtk_set_skip_taskbar)
 
     if args.urgent:
 

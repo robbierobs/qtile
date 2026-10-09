@@ -4,7 +4,7 @@ import libqtile.layout
 from libqtile.backend.wayland._ffi import lib
 from test.backend.wayland.conftest import new_layer_client, new_xdg_client
 from test.conftest import BareConfig
-from test.helpers import window_by_name
+from test.helpers import Retry, window_by_name
 from test.layouts.test_common import AllLayoutsConfig
 
 try:
@@ -184,4 +184,26 @@ def test_popup_killed_twice_keeps_new_window(wmanager):
 
     wmanager.c.eval("self._popup.kill()")
     assert wid in [w["id"] for w in wmanager.c.windows()]
+    wmanager.kill_window(pid)
+
+
+@bare_config
+def test_xwayland_skip_taskbar_request(wmanager):
+    """An X11 skip-taskbar request lands on the view's skip_taskbar, not a neighbour.
+
+    The handler used to resolve the view from the wrong listener and overwrite a
+    byte of its get_tree_node pointer, so the next placement jumped to garbage.
+    """
+    pid = wmanager.test_window("skip", skip_taskbar=True)
+    assert wmanager.c.window.info()["shell"] == "Xwayland"
+
+    @Retry(ignore_exceptions=(AssertionError,))
+    def assert_skipped():
+        assert wmanager.c.window.eval("self.skip_taskbar") == "True"
+
+    assert_skipped()
+    # Placing goes through get_tree_node
+    wmanager.c.window.toggle_floating()
+    wmanager.c.window.toggle_floating()
+    assert wmanager.c.window.info()["name"] == "skip"
     wmanager.kill_window(pid)
