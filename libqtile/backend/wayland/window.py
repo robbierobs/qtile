@@ -382,6 +382,12 @@ def request_minimize_cb(minimize: bool, userdata: ffi.CData) -> int:
 
 
 @ffi.def_extern()
+def request_configure_cb(x: int, y: int, width: int, height: int, userdata: ffi.CData) -> None:
+    win = ffi.from_handle(userdata)
+    win.handle_request_configure(x, y, width, height)
+
+
+@ffi.def_extern()
 def set_title_cb(title: ffi.CData, userdata: ffi.CData) -> None:
     win = ffi.from_handle(userdata)
     win.handle_set_title(ffi.string(title).decode())
@@ -411,6 +417,7 @@ class Window(Base, base.Window):
         ptr.request_maximize_cb = lib.request_maximize_cb
         ptr.request_minimize_cb = lib.request_minimize_cb
         ptr.request_fullscreen_cb = lib.request_fullscreen_cb
+        ptr.request_configure_cb = lib.request_configure_cb
         ptr.set_title_cb = lib.set_title_cb
         ptr.set_app_id_cb = lib.set_app_id_cb
         self._grab_click()
@@ -429,6 +436,17 @@ class Window(Base, base.Window):
                 self.fullscreen = fullscreen
                 return True
         return False
+
+    def handle_request_configure(self, x: int, y: int, width: int, height: int) -> None:
+        # As on X11, a floating window may move and resize itself, but not while the user is
+        # dragging it. Anything else keeps the geometry Qtile gave it.
+        if self._float_state != FloatStates.FLOATING:
+            return
+        if self.qtile._drag and self.qtile.current_window is self:
+            return
+        if self.group is None or self.group.screen is None:
+            return
+        self.place(x, y, width, height, self.borderwidth, self.bordercolor)
 
     def handle_request_maximize(self, maximize: bool) -> bool:
         self.maximized = maximize
@@ -912,6 +930,7 @@ class Static(Base, base.Static):
         ptr.request_maximize_cb = ffi.NULL
         ptr.request_minimize_cb = ffi.NULL
         ptr.request_fullscreen_cb = ffi.NULL
+        ptr.request_configure_cb = ffi.NULL
         ptr.set_title_cb = lib.set_title_cb
         ptr.set_app_id_cb = lib.set_app_id_cb
 

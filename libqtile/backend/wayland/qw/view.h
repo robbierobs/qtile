@@ -35,6 +35,10 @@ typedef int (*request_maximize_cb_t)(bool maximize, void *userdata);
 // Callback type for minimize request (true = minimize, false = unminimize)
 typedef int (*request_minimize_cb_t)(bool minimize, void *userdata);
 
+// Callback type for a client asking for a new geometry (layout coordinates). Qtile places
+// the view as it sees fit; the view's x/y/width/height afterwards are the answer.
+typedef void (*request_configure_cb_t)(int x, int y, int width, int height, void *userdata);
+
 // Callback type for title updated
 typedef void (*set_title_cb_t)(char *title, void *userdata);
 
@@ -102,6 +106,7 @@ struct qw_view {
     request_maximize_cb_t request_maximize_cb;
     request_minimize_cb_t request_minimize_cb;
     request_fullscreen_cb_t request_fullscreen_cb;
+    request_configure_cb_t request_configure_cb;
     set_title_cb_t set_title_cb;
     set_app_id_cb_t set_app_id_cb;
     void *cb_data; // User data passed to callbacks
