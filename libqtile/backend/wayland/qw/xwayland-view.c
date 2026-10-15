@@ -731,30 +731,6 @@ static uint32_t qw_xwayland_view_configure(struct qw_view *view, double lx, doub
     return 0;
 }
 
-static void qw_xwayland_view_clamp_to_size_hints(struct wlr_xwayland_surface *xwayland_surface,
-                                                 int *width, int *height) {
-    xcb_size_hints_t *hints = xwayland_surface->size_hints;
-    if (hints == NULL) {
-        return;
-    }
-    if (hints->flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) {
-        if (*width < hints->min_width) {
-            *width = hints->min_width;
-        }
-        if (*height < hints->min_height) {
-            *height = hints->min_height;
-        }
-    }
-    if (hints->flags & XCB_ICCCM_SIZE_HINT_P_MAX_SIZE) {
-        if (hints->max_width > 0 && *width > hints->max_width) {
-            *width = hints->max_width;
-        }
-        if (hints->max_height > 0 && *height > hints->max_height) {
-            *height = hints->max_height;
-        }
-    }
-}
-
 static void qw_xwayland_view_handle_request_configure(struct wl_listener *listener, void *data) {
     struct qw_xwayland_view *xwayland_view =
         wl_container_of(listener, xwayland_view, request_configure);
@@ -768,14 +744,14 @@ static void qw_xwayland_view_handle_request_configure(struct wl_listener *listen
     }
 
     // Whether the window may move or resize itself is up to Qtile (floating windows may,
-    // like on X11), so pass it the complete geometry, within the size hints.
+    // like on X11), so pass it the complete geometry. The size hints don't limit it: clients
+    // such as Carla's plugin UI host resize first and only then pin the hints to the new size.
     struct qw_view *view = &xwayland_view->base;
     if (view->request_configure_cb != NULL) {
         int x = event->mask & XCB_CONFIG_WINDOW_X ? event->x : view->x;
         int y = event->mask & XCB_CONFIG_WINDOW_Y ? event->y : view->y;
         int width = event->mask & XCB_CONFIG_WINDOW_WIDTH ? event->width : view->width;
         int height = event->mask & XCB_CONFIG_WINDOW_HEIGHT ? event->height : view->height;
-        qw_xwayland_view_clamp_to_size_hints(xwayland_surface, &width, &height);
         view->request_configure_cb(x, y, width, height, view->cb_data);
     }
 
