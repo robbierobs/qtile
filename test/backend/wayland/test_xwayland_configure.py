@@ -110,11 +110,15 @@ def test_floating_window_resizes_itself(wmanager, x11_conn):
     assert_size(wmanager, x11_conn, wid, (300, 200))
     assert window_by_name(wmanager.c, NAME).info()["floating"]
 
-    # The request is clamped to the size hints
-    set_size_hints(x11_conn, wid, (100, 100), (500, 350))
-    request_size(x11_conn, wid, 600, 400)
+    # Carla's plugin UI host resizes first and only then pins the size hints to the new
+    # size, so the request arrives while the hints still pin the old one. As on X11, the
+    # hints don't limit what a floating window may ask for.
+    request_size(x11_conn, wid, 500, 350)
+    set_size_hints(x11_conn, wid, (500, 350), (500, 350))
+    x11_conn.flush()
     assert_size(wmanager, x11_conn, wid, (500, 350))
 
+    set_size_hints(x11_conn, wid, (400, 250), (400, 250))
     request_size(x11_conn, wid, 400, 250)
     assert_size(wmanager, x11_conn, wid, (400, 250))
 
