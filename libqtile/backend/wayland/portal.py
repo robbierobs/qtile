@@ -2,26 +2,40 @@
 An xdg-desktop-portal backend for the Wayland backend.
 
 It implements org.freedesktop.impl.portal.InputCapture, which programs such as Synergy
-and Deskflow use to share this machine's keyboard and mouse with others. xdg-desktop-portal
-routes the interface here when qtile.portal is installed and the session's portals.conf
-selects it:
+and Deskflow use to share this machine's keyboard and mouse with others, and
+org.freedesktop.impl.portal.Clipboard, which lets such a session share the clipboard.
+xdg-desktop-portal routes the interfaces here when qtile.portal is installed and the
+session's portals.conf selects it:
 
     [preferred]
     org.freedesktop.impl.portal.InputCapture=qtile
+    org.freedesktop.impl.portal.Clipboard=qtile
 
 Only the programs listed in ``wl_input_capture_apps`` may capture input, matched by app
 ID or by executable. Programs started outside a sandbox usually have no app ID, so the
-executable of the D-Bus connection that asked is checked as well.
+executable of the D-Bus connection that asked is checked as well. The clipboard is
+shared only by sessions that asked for it before they started.
 """
 
+import asyncio
+import itertools
 import os
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from dbus_fast import Message, MessageType, Variant
+from dbus_fast import DBusError, ErrorType, Message, MessageType, Variant
 from dbus_fast.aio import MessageBus
 from dbus_fast.constants import NameFlag, PropertyAccess, RequestNameReply
 from dbus_fast.service import ServiceInterface, dbus_property, method, signal
 
+from libqtile.backend.wayland.clipboard import (
+    ClipboardSource,
+    add_selection_listener,
+    read_selection,
+    remove_selection_listener,
+    selection_mime_types,
+    selection_owner,
+)
 from libqtile.backend.wayland.input_capture import (
     Barrier,
     InputCaptureSession,
@@ -46,6 +60,13 @@ CAPABILITY_KEYBOARD = 1
 CAPABILITY_POINTER = 2
 SUPPORTED_CAPABILITIES = CAPABILITY_KEYBOARD | CAPABILITY_POINTER
 
+# How long the portal keeps a clipboard fd open: an unanswered transfer is closed after
+# TRANSFER_TIMEOUT, and a fd handed out is closed after RETURNED_FD_LINGER if its
+# SelectionWriteDone never comes. dbus_fast sends a returned fd only when the reply is
+# written and never closes it, so the portal's copy must outlive that write.
+TRANSFER_TIMEOUT = 5
+RETURNED_FD_LINGER = 30
+
 
 def sender_from_session_handle(session_handle: str) -> str | None:
     """
@@ -56,6 +77,27 @@ def sender_from_session_handle(session_handle: str) -> str | None:
     if len(parts) < 2 or parts[-3] != "session":
         return None
     return ":" + parts[-2].replace("_", ".")
+
+
+class HeldFd:
+    """A clipboard fd the portal keeps open until its timer closes it or it is closed."""
+
+    def __init__(self, fd: int) -> None:
+        self.fd: int | None = fd
+        self.timer: asyncio.TimerHandle | None = None
+
+    def arm(self, delay: float, expire: Callable[[], None]) -> None:
+        if self.timer is not None:
+            self.timer.cancel()
+        self.timer = asyncio.get_running_loop().call_later(delay, expire)
+
+    def close(self) -> None:
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
 
 
 class PortalSession(ServiceInterface):
@@ -71,6 +113,12 @@ class PortalSession(ServiceInterface):
         self.zone_set = portal.zone_set
         self.capture: InputCaptureSession | None = None
         self.eis_fd: int | None = None
+        self.clipboard_requested = False
+        self.clipboard_enabled = False
+        self.clipboard_source: ClipboardSource | None = None
+        # Fds for SelectionTransfer requests by serial, and read fds SelectionRead returned
+        self.transfers: dict[int, HeldFd] = {}
+        self.returned: set[HeldFd] = set()
 
     def start(self) -> None:
         interface = self.portal.interface
@@ -100,7 +148,38 @@ class PortalSession(ServiceInterface):
         if self.eis_fd is not None:
             os.close(self.eis_fd)
             self.eis_fd = None
+        self.close_clipboard()
         self.portal.remove_session(self)
+
+    def close_clipboard(self) -> None:
+        self.clipboard_enabled = False
+        if self.clipboard_source is not None:
+            # Its on_cancelled clears clipboard_source too
+            self.clipboard_source.destroy()
+            self.clipboard_source = None
+        for held in [*self.transfers.values(), *self.returned]:
+            held.close()
+        self.transfers.clear()
+        self.returned.clear()
+
+    def on_send(self, mime_type: str, fd: int) -> None:
+        serial = self.portal.next_serial()
+        held = HeldFd(fd)
+        self.transfers[serial] = held
+        held.arm(TRANSFER_TIMEOUT, lambda: self.drop_transfer(serial))
+        self.portal.clipboard.SelectionTransfer(self.handle, mime_type, serial)
+
+    def source_cancelled(self) -> None:
+        self.clipboard_source = None
+
+    def drop_transfer(self, serial: int) -> None:
+        held = self.transfers.pop(serial, None)
+        if held is not None:
+            held.close()
+
+    def drop_returned(self, held: HeldFd) -> None:
+        self.returned.discard(held)
+        held.close()
 
     @method()
     def Close(self) -> None:  # noqa: N802
@@ -181,11 +260,12 @@ class InputCaptureInterface(ServiceInterface):
             return [RESPONSE_OTHER, {}]
         if not await self.portal.start_session(session, capabilities):
             return [RESPONSE_OTHER, {}]
-        # Neither the clipboard nor persistence are offered
-        return [
-            RESPONSE_SUCCESS,
-            {"capabilities": Variant("u", capabilities & SUPPORTED_CAPABILITIES)},
-        ]
+        results = {"capabilities": Variant("u", capabilities & SUPPORTED_CAPABILITIES)}
+        if session.clipboard_requested:
+            session.clipboard_enabled = True
+            results["clipboard_enabled"] = Variant("b", True)
+        # Persistence is not offered: there are no restore tokens
+        return [RESPONSE_SUCCESS, results]
 
     @method()
     def GetZones(  # noqa: N802
@@ -310,6 +390,112 @@ class InputCaptureInterface(ServiceInterface):
         return [session_handle, options]
 
 
+class ClipboardInterface(ServiceInterface):
+    """org.freedesktop.impl.portal.Clipboard, version 1, for input capture sessions."""
+
+    def __init__(self, portal: "InputCapturePortal") -> None:
+        super().__init__("org.freedesktop.impl.portal.Clipboard")
+        self.portal = portal
+
+    @dbus_property(access=PropertyAccess.READ)
+    def version(self) -> "u":  # type:ignore  # noqa: F722, F821
+        return 1
+
+    def _enabled_session(self, session_handle: str) -> PortalSession:
+        session = self.portal.sessions.get(session_handle)
+        if session is None or not session.clipboard_enabled:
+            raise DBusError(
+                ErrorType.ACCESS_DENIED, "The clipboard is not enabled for this session"
+            )
+        return session
+
+    @method()
+    def RequestClipboard(  # noqa: N802
+        self,
+        session_handle: "o",  # type:ignore  # noqa: F722, F821
+        options: "a{sv}",  # type:ignore  # noqa: F722, F821
+    ) -> None:
+        # Only a session that has not started can ask; the Start that follows enables it
+        session = self.portal.sessions.get(session_handle)
+        if session is not None and not session.started:
+            session.clipboard_requested = True
+
+    @method()
+    def SetSelection(  # noqa: N802
+        self,
+        session_handle: "o",  # type:ignore  # noqa: F722, F821
+        options: "a{sv}",  # type:ignore  # noqa: F722, F821
+    ) -> None:
+        session = self._enabled_session(session_handle)
+        mime_types = options.get("mime_types", Variant("as", [])).value
+        if not mime_types:
+            session.close_clipboard()
+            return
+        session.clipboard_source = ClipboardSource(
+            self.portal.core,
+            mime_types,
+            on_send=session.on_send,
+            on_cancelled=session.source_cancelled,
+        )
+
+    @method()
+    def SelectionWrite(  # noqa: N802
+        self,
+        session_handle: "o",  # type:ignore  # noqa: F722, F821
+        serial: "u",  # type:ignore  # noqa: F722, F821
+    ) -> "h":  # type:ignore  # noqa: F722, F821
+        session = self._enabled_session(session_handle)
+        held = session.transfers.get(serial)
+        if held is None:
+            raise DBusError(ErrorType.FAILED, f"No transfer with serial {serial}")
+        held.arm(RETURNED_FD_LINGER, lambda: session.drop_transfer(serial))
+        return held.fd
+
+    @method()
+    def SelectionWriteDone(  # noqa: N802
+        self,
+        session_handle: "o",  # type:ignore  # noqa: F722, F821
+        serial: "u",  # type:ignore  # noqa: F722, F821
+        success: "b",  # type:ignore  # noqa: F722, F821
+    ) -> None:
+        session = self._enabled_session(session_handle)
+        if serial not in session.transfers:
+            raise DBusError(ErrorType.FAILED, f"No transfer with serial {serial}")
+        session.drop_transfer(serial)
+
+    @method()
+    def SelectionRead(  # noqa: N802
+        self,
+        session_handle: "o",  # type:ignore  # noqa: F722, F821
+        mime_type: "s",  # type:ignore  # noqa: F722, F821
+    ) -> "h":  # type:ignore  # noqa: F722, F821
+        session = self._enabled_session(session_handle)
+        fd = read_selection(self.portal.core, mime_type)
+        if fd is None:
+            raise DBusError(ErrorType.FAILED, f"The selection does not offer {mime_type}")
+        held = HeldFd(fd)
+        session.returned.add(held)
+        held.arm(RETURNED_FD_LINGER, lambda: session.drop_returned(held))
+        return fd
+
+    @signal()
+    def SelectionOwnerChanged(  # noqa: N802
+        self,
+        session_handle: str,
+        options: dict,
+    ) -> "oa{sv}":  # type:ignore  # noqa: F722, F821
+        return [session_handle, options]
+
+    @signal()
+    def SelectionTransfer(  # noqa: N802
+        self,
+        session_handle: str,
+        mime_type: str,
+        serial: int,
+    ) -> "osu":  # type:ignore  # noqa: F722, F821
+        return [session_handle, mime_type, serial]
+
+
 class InputCapturePortal:
     """Owns the portal's bus name and its sessions."""
 
@@ -317,11 +503,32 @@ class InputCapturePortal:
         self.core = core
         self.allowed_apps = allowed_apps
         self.interface = InputCaptureInterface(self)
+        self.clipboard = ClipboardInterface(self)
         self.sessions: dict[str, PortalSession] = {}
         self.bus: MessageBus | None = None
         # Increases whenever the zones change, so stale barriers can be refused
         self.zone_set = 1
         self._zones = self.zones()
+        # One serial counter for clipboard transfers, shared by every session
+        self._serials = itertools.count(1)
+
+    def next_serial(self) -> int:
+        return next(self._serials)
+
+    def selection_changed(self) -> None:
+        owner = selection_owner(self.core)
+        mime_types = selection_mime_types(self.core)
+        for session in self.sessions.values():
+            if not session.clipboard_enabled:
+                continue
+            is_owner = owner is not None and owner is session.clipboard_source
+            self.clipboard.SelectionOwnerChanged(
+                session.handle,
+                {
+                    "mime_types": Variant("as", mime_types),
+                    "session_is_owner": Variant("b", is_owner),
+                },
+            )
 
     async def start(self) -> bool:
         try:
@@ -331,6 +538,7 @@ class InputCapturePortal:
             return False
 
         self.bus.export(OBJECT_PATH, self.interface)
+        self.bus.export(OBJECT_PATH, self.clipboard)
         reply = await self.bus.request_name(BUS_NAME, flags=NameFlag.DO_NOT_QUEUE)
         if reply not in (RequestNameReply.PRIMARY_OWNER, RequestNameReply.ALREADY_OWNER):
             logger.warning("Cannot start the portal, %s is already owned", BUS_NAME)
@@ -338,10 +546,12 @@ class InputCapturePortal:
             self.bus = None
             return False
 
+        add_selection_listener(self.core, self.selection_changed)
         logger.info("Input capture portal started for: %s", ", ".join(self.allowed_apps))
         return True
 
     def stop(self) -> None:
+        remove_selection_listener(self.core, self.selection_changed)
         for session in list(self.sessions.values()):
             session.close()
         if self.bus is not None:

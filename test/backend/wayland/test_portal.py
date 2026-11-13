@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from dbus_fast import Message, Variant
+from dbus_fast import DBusError, ErrorType, Message, Variant
 from dbus_fast.aio import MessageBus
 
 from libqtile.config import Key
@@ -284,7 +284,9 @@ def portal_frontend(portal_manager, private_bus):
         shutil.copy(PORTAL_FILE, portals)
         # With XDG_DESKTOP_PORTAL_DIR set, the configuration is read from there too
         (portals / "qtile-portals.conf").write_text(
-            "[preferred]\ndefault=none\norg.freedesktop.impl.portal.InputCapture=qtile\n"
+            "[preferred]\ndefault=none\n"
+            "org.freedesktop.impl.portal.InputCapture=qtile\n"
+            "org.freedesktop.impl.portal.Clipboard=qtile\n"
         )
         runtime = Path(tmp) / "runtime"
         runtime.mkdir(mode=0o700)
@@ -307,44 +309,47 @@ def portal_frontend(portal_manager, private_bus):
         process.wait()
 
 
+def frontend_interface(bus, interface):
+    @Retry(ignore_exceptions=(Exception,))
+    def get():
+        return bus.interface("org.freedesktop.portal.Desktop", OBJECT_PATH, interface)
+
+    return get()
+
+
+def request(bus, run, method, *args, token):
+    """Call a portal method that answers through a Request object."""
+    path = f"/org/freedesktop/portal/desktop/request/{bus.sender}/{token}"
+    responses = []
+
+    def handler(message):
+        if message.path == path and message.member == "Response":
+            responses.append(message.body)
+
+    bus.bus.add_message_handler(handler)
+    bus.call("AddMatch", f"type='signal',path='{path}'", signature="s")
+    run(method(*args))
+    bus.wait_until(lambda: responses)
+    return responses[0]
+
+
 @pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
 def test_portal_through_frontend(portal_frontend, portal_manager, bus, run, virtual_keyboard):
     """Through xdg-desktop-portal, as libportal (and so Synergy) uses it"""
     virtual_keyboard.assert_ok("clear_modifiers")
 
-    @Retry(ignore_exceptions=(Exception,))
-    def frontend_interface():
-        return bus.interface(
-            "org.freedesktop.portal.Desktop", OBJECT_PATH, "org.freedesktop.portal.InputCapture"
-        )
-
-    ic = frontend_interface()
+    ic = frontend_interface(bus, "org.freedesktop.portal.InputCapture")
     assert run(ic.get_version()) >= 2
-
-    def request(method, *args, token):
-        """Call a portal method that answers through a Request object."""
-        path = f"/org/freedesktop/portal/desktop/request/{bus.sender}/{token}"
-        responses = []
-
-        def handler(message):
-            if message.path == path and message.member == "Response":
-                responses.append(message.body)
-
-        bus.bus.add_message_handler(handler)
-        bus.call("AddMatch", f"type='signal',path='{path}'", signature="s")
-        run(method(*args))
-        bus.wait_until(lambda: responses)
-        return responses[0]
 
     results = run(ic.call_create_session2({"session_handle_token": Variant("s", "s1")}))
     session = results["session_handle"].value
 
     options = {"handle_token": Variant("s", "r1"), "capabilities": Variant("u", CAPABILITIES)}
-    response, _ = request(ic.call_start, session, "", options, token="r1")
+    response, _ = request(bus, run, ic.call_start, session, "", options, token="r1")
     assert response == 0
 
     options = {"handle_token": Variant("s", "r2")}
-    response, results = request(ic.call_get_zones, session, options, token="r2")
+    response, results = request(bus, run, ic.call_get_zones, session, options, token="r2")
     assert response == 0
     [[width, height, x, y]] = results["zones"].value
 
@@ -352,7 +357,14 @@ def test_portal_through_frontend(portal_frontend, portal_manager, bus, run, virt
     barriers = [right_barrier(width, height, x, y)]
     zone_set = results["zone_set"].value
     response, results = request(
-        ic.call_set_pointer_barriers, session, options, barriers, zone_set, token="r3"
+        bus,
+        run,
+        ic.call_set_pointer_barriers,
+        session,
+        options,
+        barriers,
+        zone_set,
+        token="r3",
     )
     assert response == 0
     assert results["failed_barriers"].value == []
@@ -360,3 +372,109 @@ def test_portal_through_frontend(portal_frontend, portal_manager, bus, run, virt
     fd = run(ic.call_connect_to_eis(session, {}))
     with EIReceiver(portal_manager, fd) as receiver:
         wait_for_devices(receiver)
+
+
+def clipboard_interface(bus):
+    return bus.interface(BUS_NAME, OBJECT_PATH, "org.freedesktop.impl.portal.Clipboard")
+
+
+def start_session(bus, run, ic, token, *, request_clipboard=False):
+    """Create and start an input capture session, optionally asking for the clipboard first."""
+    session = f"/org/freedesktop/portal/desktop/session/{bus.sender}/{token}"
+    run(ic.call_create_session2(session, "", {}))
+    if request_clipboard:
+        run(clipboard_interface(bus).call_request_clipboard(session, {}))
+    response, results = run(
+        ic.call_start(
+            f"/request/{token}", session, "", "", {"capabilities": Variant("u", CAPABILITIES)}
+        )
+    )
+    return session, response, results
+
+
+def assert_access_denied(run, call):
+    with pytest.raises(DBusError) as error:
+        run(call)
+    assert error.value.type == ErrorType.ACCESS_DENIED
+
+
+def assert_failed(run, call):
+    with pytest.raises(DBusError) as error:
+        run(call)
+    assert error.value.type == ErrorType.FAILED
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_interface(portal_manager, bus, run):
+    """The Clipboard interface is exported beside InputCapture, at version 1"""
+    assert run(clipboard_interface(bus).get_version()) == 1
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_enabling(portal_manager, bus, run):
+    """RequestClipboard before Start enables the clipboard; a session that did not ask does not"""
+    ic = bus.interface(BUS_NAME, OBJECT_PATH, "org.freedesktop.impl.portal.InputCapture")
+    _, response, results = start_session(bus, run, ic, "asked", request_clipboard=True)
+    assert response == 0
+    assert results["clipboard_enabled"].value is True
+
+    _, response, results = start_session(bus, run, ic, "plain")
+    assert response == 0
+    assert "clipboard_enabled" not in results
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_needs_enabling(portal_manager, bus, run):
+    """Clipboard calls are refused unless the clipboard was enabled at Start"""
+    ic = bus.interface(BUS_NAME, OBJECT_PATH, "org.freedesktop.impl.portal.InputCapture")
+    clipboard = clipboard_interface(bus)
+    session, response, _ = start_session(bus, run, ic, "plain")
+    assert response == 0
+
+    # Asking after the session started does not enable it
+    run(clipboard.call_request_clipboard(session, {}))
+    selection = {"mime_types": Variant("as", ["text/plain"])}
+    assert_access_denied(run, clipboard.call_set_selection(session, selection))
+    assert_access_denied(run, clipboard.call_selection_read(session, "text/plain"))
+    assert_access_denied(run, clipboard.call_selection_write(session, 1))
+    assert_access_denied(run, clipboard.call_selection_write_done(session, 1, True))
+
+
+@pytest.mark.parametrize("wmanager", [RefusingPortalConfig], indirect=True)
+def test_portal_clipboard_refused(portal_manager, bus, run):
+    """A refused program's session never starts, so it never gets the clipboard"""
+    ic = bus.interface(BUS_NAME, OBJECT_PATH, "org.freedesktop.impl.portal.InputCapture")
+    session, response, _ = start_session(bus, run, ic, "refused", request_clipboard=True)
+    assert response == 2
+    selection = {"mime_types": Variant("as", ["text/plain"])}
+    assert_access_denied(run, clipboard_interface(bus).call_set_selection(session, selection))
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_unknown_data(portal_manager, bus, run):
+    """With no selection to read and no transfer under a serial, the calls fail"""
+    ic = bus.interface(BUS_NAME, OBJECT_PATH, "org.freedesktop.impl.portal.InputCapture")
+    clipboard = clipboard_interface(bus)
+    session, response, _ = start_session(bus, run, ic, "asked", request_clipboard=True)
+    assert response == 0
+
+    assert_failed(run, clipboard.call_selection_read(session, "text/plain"))
+    assert_failed(run, clipboard.call_selection_write(session, 7))
+    assert_failed(run, clipboard.call_selection_write_done(session, 7, True))
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_through_frontend(portal_frontend, portal_manager, bus, run):
+    """Through xdg-desktop-portal, RequestClipboard before Start enables the clipboard"""
+    ic = frontend_interface(bus, "org.freedesktop.portal.InputCapture")
+    clipboard = frontend_interface(bus, "org.freedesktop.portal.Clipboard")
+    assert run(clipboard.get_version()) >= 1
+
+    results = run(ic.call_create_session2({"session_handle_token": Variant("s", "c1")}))
+    session = results["session_handle"].value
+    run(clipboard.call_request_clipboard(session, {}))
+
+    options = {"handle_token": Variant("s", "c2"), "capabilities": Variant("u", CAPABILITIES)}
+    response, results = request(bus, run, ic.call_start, session, "", options, token="c2")
+    assert response == 0
+    assert results["clipboard_enabled"].value is True
