@@ -79,6 +79,7 @@ void qw_server_finalize(struct qw_server *server) {
     wl_list_remove(&server->new_token.link);
     wl_list_remove(&server->request_set_selection.link);
     wl_list_remove(&server->request_set_primary_selection.link);
+    wl_list_remove(&server->set_selection.link);
     wl_list_remove(&server->request_start_drag.link);
     wl_list_remove(&server->start_drag.link);
     wl_list_remove(&server->new_session_lock.link);
@@ -615,6 +616,15 @@ static void qw_server_handle_request_set_primary_selection(struct wl_listener *l
     wlr_seat_set_primary_selection(server->seat, event->source, event->serial);
 }
 
+static void qw_server_handle_set_selection(struct wl_listener *listener, void *data) {
+    UNUSED(data);
+    struct qw_server *server = wl_container_of(listener, server, set_selection);
+
+    if (server->clipboard_selection_changed_cb != NULL) {
+        server->clipboard_selection_changed_cb(server->cb_data);
+    }
+}
+
 static void qw_server_handle_drag_icon_destroy(struct wl_listener *listener, void *data) {
     UNUSED(data);
     struct qw_drag_icon *drag_icon = wl_container_of(listener, drag_icon, destroy);
@@ -1037,6 +1047,8 @@ bool qw_server_init(struct qw_server *server) {
     server->request_set_primary_selection.notify = qw_server_handle_request_set_primary_selection;
     wl_signal_add(&server->seat->events.request_set_primary_selection,
                   &server->request_set_primary_selection);
+    server->set_selection.notify = qw_server_handle_set_selection;
+    wl_signal_add(&server->seat->events.set_selection, &server->set_selection);
 
     server->virtual_keyboard = wlr_virtual_keyboard_manager_v1_create(server->display);
     if (server->virtual_keyboard == NULL) {
