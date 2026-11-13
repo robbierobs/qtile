@@ -169,6 +169,12 @@ typedef void (*input_capture_deactivated_cb_t)(void *userdata, uint32_t activati
 typedef void (*input_capture_disabled_cb_t)(void *userdata);
 typedef void (*input_capture_zones_changed_cb_t)(void *userdata);
 
+// Callbacks for the clipboard; see clipboard.h. A source's userdata is passed to the
+// source callbacks, and cb_data to clipboard_selection_changed_cb.
+typedef void (*clipboard_source_send_cb_t)(void *userdata, const char *mime_type, int fd);
+typedef void (*clipboard_source_cancelled_cb_t)(void *userdata);
+typedef void (*clipboard_selection_changed_cb_t)(void *userdata);
+
 enum {
     LAYER_BACKGROUND,   // background, layer shell
     LAYER_BOTTOM,       // bottom, layer shell
@@ -235,6 +241,9 @@ struct qw_server {
     input_capture_deactivated_cb_t input_capture_deactivated_cb;
     input_capture_disabled_cb_t input_capture_disabled_cb;
     input_capture_zones_changed_cb_t input_capture_zones_changed_cb;
+    clipboard_source_send_cb_t clipboard_source_send_cb;
+    clipboard_source_cancelled_cb_t clipboard_source_cancelled_cb;
+    clipboard_selection_changed_cb_t clipboard_selection_changed_cb;
     void *view_activation_cb_data;
     void *cb_data;
     struct qw_layer_view *exclusive_layer;
@@ -277,6 +286,7 @@ struct qw_server {
     struct wl_listener request_cursor;
     struct wl_listener request_set_selection;
     struct wl_listener request_set_primary_selection;
+    struct wl_listener set_selection;
     struct wl_listener request_start_drag;
     struct wl_listener start_drag;
     struct wl_listener new_session_lock;
