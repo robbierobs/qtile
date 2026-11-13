@@ -259,6 +259,7 @@ CDEF_FILES = [
     "input-device.h",
     "keyboard.h",
     "input-capture.h",
+    "clipboard.h",
 ]
 XWAYLAND_ONLY_SOURCES = ["xwayland-view.c"]
 
@@ -403,6 +404,9 @@ extern "Python" void input_capture_activated_cb(void *userdata, uint32_t activat
 extern "Python" void input_capture_deactivated_cb(void *userdata, uint32_t activation_id);
 extern "Python" void input_capture_disabled_cb(void *userdata);
 extern "Python" void input_capture_zones_changed_cb(void *userdata);
+extern "Python" void clipboard_source_send_cb(void *userdata, const char *mime_type, int fd);
+extern "Python" void clipboard_source_cancelled_cb(void *userdata);
+extern "Python" void clipboard_selection_changed_cb(void *userdata);
 
 extern "Python" int request_focus_cb(void *userdata);
 extern "Python" int request_close_cb(void *userdata);
