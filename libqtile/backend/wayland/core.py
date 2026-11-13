@@ -641,6 +641,8 @@ class Core(base.Core):
             self.input_capture_portal.stop()
         for session in list(self.input_capture_sessions):
             session.close()
+        # A listener scheduled now would run after the seat is gone
+        self.clipboard_listeners.clear()
         for source in list(self.clipboard_sources):
             source.destroy()
         lib.qw_server_finalize(self.qw)

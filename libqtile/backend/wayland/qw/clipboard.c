@@ -89,13 +89,14 @@ struct qw_clipboard_source *qw_clipboard_set_selection(struct qw_server *server,
 }
 
 void qw_clipboard_source_destroy(struct qw_clipboard_source *source) {
-    struct wlr_seat *seat = source->server->seat;
-    if (seat->selection_source == &source->base) {
-        wlr_seat_set_selection(seat, NULL, wl_display_next_serial(source->server->display));
+    // Destroying the source frees it
+    struct qw_server *server = source->server;
+    if (server->seat->selection_source == &source->base) {
+        wlr_seat_set_selection(server->seat, NULL, wl_display_next_serial(server->display));
     } else {
         wlr_data_source_destroy(&source->base);
     }
-    flush_clients(source->server);
+    flush_clients(server);
 }
 
 bool qw_clipboard_send_selection(struct qw_server *server, const char *mime_type, int fd) {
