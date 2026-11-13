@@ -151,12 +151,15 @@ class PortalSession(ServiceInterface):
         self.close_clipboard()
         self.portal.remove_session(self)
 
-    def close_clipboard(self) -> None:
-        self.clipboard_enabled = False
+    def destroy_source(self) -> None:
         if self.clipboard_source is not None:
             # Its on_cancelled clears clipboard_source too
             self.clipboard_source.destroy()
             self.clipboard_source = None
+
+    def close_clipboard(self) -> None:
+        self.clipboard_enabled = False
+        self.destroy_source()
         for held in [*self.transfers.values(), *self.returned]:
             held.close()
         self.transfers.clear()
@@ -429,7 +432,7 @@ class ClipboardInterface(ServiceInterface):
         session = self._enabled_session(session_handle)
         mime_types = options.get("mime_types", Variant("as", [])).value
         if not mime_types:
-            session.close_clipboard()
+            session.destroy_source()
             return
         session.clipboard_source = ClipboardSource(
             self.portal.core,
