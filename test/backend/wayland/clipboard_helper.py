@@ -9,6 +9,7 @@ State lives in this module, which persists in that process for the length of one
 import asyncio
 import os
 
+from libqtile.backend.wayland import portal
 from libqtile.backend.wayland.clipboard import (
     ClipboardSource,
     add_selection_listener,
@@ -87,3 +88,8 @@ def add_recording_listener(core, name):
 
 def fd_count():
     return len(os.listdir("/proc/self/fd"))
+
+
+def set_portal_constant(name, value):
+    """Shorten a portal timeout; the portal reads it at call time."""
+    setattr(portal, name, value)
