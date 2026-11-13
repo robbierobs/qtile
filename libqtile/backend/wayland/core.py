@@ -44,13 +44,14 @@ import signal
 import sys
 import time
 from collections import defaultdict
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
 
 from libqtile import config, hook
 from libqtile.backend import base
 from libqtile.backend.wayland import inputs
+from libqtile.backend.wayland.clipboard import ClipboardSource
 from libqtile.backend.wayland.idle_inhibit import IdleInhibitorManager
 from libqtile.backend.wayland.idle_notify import IdleNotifier
 from libqtile.backend.wayland.input_capture import InputCaptureSession
@@ -286,6 +287,11 @@ class Core(base.Core):
         self.qw.input_capture_deactivated_cb = lib.input_capture_deactivated_cb
         self.qw.input_capture_disabled_cb = lib.input_capture_disabled_cb
         self.qw.input_capture_zones_changed_cb = lib.input_capture_zones_changed_cb
+        self.qw.clipboard_source_send_cb = lib.clipboard_source_send_cb
+        self.qw.clipboard_source_cancelled_cb = lib.clipboard_source_cancelled_cb
+        self.qw.clipboard_selection_changed_cb = lib.clipboard_selection_changed_cb
+        self.clipboard_sources: set[ClipboardSource] = set()
+        self.clipboard_listeners: set[Callable[[], None]] = set()
         if not lib.qw_server_start(self.qw):
             sys.exit(1)
         os.environ["WAYLAND_DISPLAY"] = self.display_name
@@ -635,6 +641,8 @@ class Core(base.Core):
             self.input_capture_portal.stop()
         for session in list(self.input_capture_sessions):
             session.close()
+        for source in list(self.clipboard_sources):
+            source.destroy()
         lib.qw_server_finalize(self.qw)
 
     def _configure_input_capture(self) -> None:

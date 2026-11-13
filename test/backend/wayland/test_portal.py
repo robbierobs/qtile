@@ -3,25 +3,33 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
-from dbus_fast import Message, Variant
+from dbus_fast import DBusError, ErrorType, Message, Variant
 from dbus_fast.aio import MessageBus
 
 from libqtile.config import Key
 from libqtile.lazy import lazy
-from test.backend.wayland.conftest import ClientHandler
+from test.backend.wayland.conftest import ClientHandler, make_test_env
+from test.backend.wayland.test_clipboard import (
+    copy,  # noqa: F401, the fixture is requested by name
+    list_types,
+    settled_fd_count,
+)
 from test.backend.wayland.test_input_capture import EIReceiver, zone
 from test.helpers import BareConfig, Retry
 
 BUS_NAME = "org.freedesktop.impl.portal.desktop.qtile"
 OBJECT_PATH = "/org/freedesktop/portal/desktop"
 PORTAL_FILE = Path(__file__).parents[3] / "libqtile" / "resources" / "portal" / "qtile.portal"
+HELPER = '__import__("test.backend.wayland.clipboard_helper", fromlist=["_"])'
 
 # The tests talk to the portal from this process, which the allowlist sees by executable
 TEST_EXECUTABLE = os.readlink("/proc/self/exe")
 CAPABILITIES = 3  # keyboard and pointer
+MIME_TYPES = ["text/plain;charset=utf-8", "text/plain"]
 
 
 class PortalConfig(BareConfig):
@@ -284,7 +292,9 @@ def portal_frontend(portal_manager, private_bus):
         shutil.copy(PORTAL_FILE, portals)
         # With XDG_DESKTOP_PORTAL_DIR set, the configuration is read from there too
         (portals / "qtile-portals.conf").write_text(
-            "[preferred]\ndefault=none\norg.freedesktop.impl.portal.InputCapture=qtile\n"
+            "[preferred]\ndefault=none\n"
+            "org.freedesktop.impl.portal.InputCapture=qtile\n"
+            "org.freedesktop.impl.portal.Clipboard=qtile\n"
         )
         runtime = Path(tmp) / "runtime"
         runtime.mkdir(mode=0o700)
@@ -307,56 +317,443 @@ def portal_frontend(portal_manager, private_bus):
         process.wait()
 
 
+def frontend_interface(bus, interface):
+    @Retry(ignore_exceptions=(Exception,))
+    def get():
+        return bus.interface("org.freedesktop.portal.Desktop", OBJECT_PATH, interface)
+
+    return get()
+
+
+def request(bus, run, method, *args, token):
+    """Call a portal method that answers through a Request object."""
+    path = f"/org/freedesktop/portal/desktop/request/{bus.sender}/{token}"
+    responses = []
+
+    def handler(message):
+        if message.path == path and message.member == "Response":
+            responses.append(message.body)
+
+    bus.bus.add_message_handler(handler)
+    bus.call("AddMatch", f"type='signal',path='{path}'", signature="s")
+    run(method(*args))
+    bus.wait_until(lambda: responses)
+    return responses[0]
+
+
+def start_frontend_capture(bus, run, ic, token, clipboard=None):
+    """
+    Create, start and aim a capture session through the frontend, as Synergy does. Asks
+    for the clipboard first if a Clipboard proxy is given. Returns the session handle, the
+    Start results and the EIS fd.
+    """
+    results = run(ic.call_create_session2({"session_handle_token": Variant("s", f"{token}s")}))
+    session = results["session_handle"].value
+    if clipboard is not None:
+        run(clipboard.call_request_clipboard(session, {}))
+
+    options = {
+        "handle_token": Variant("s", f"{token}1"),
+        "capabilities": Variant("u", CAPABILITIES),
+    }
+    response, start_results = request(
+        bus, run, ic.call_start, session, "", options, token=f"{token}1"
+    )
+    assert response == 0
+
+    options = {"handle_token": Variant("s", f"{token}2")}
+    response, results = request(bus, run, ic.call_get_zones, session, options, token=f"{token}2")
+    assert response == 0
+    [[width, height, x, y]] = results["zones"].value
+
+    options = {"handle_token": Variant("s", f"{token}3")}
+    barriers = [right_barrier(width, height, x, y)]
+    zone_set = results["zone_set"].value
+    response, results = request(
+        bus,
+        run,
+        ic.call_set_pointer_barriers,
+        session,
+        options,
+        barriers,
+        zone_set,
+        token=f"{token}3",
+    )
+    assert response == 0
+    assert results["failed_barriers"].value == []
+
+    return session, start_results, run(ic.call_connect_to_eis(session, {}))
+
+
 @pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
 def test_portal_through_frontend(portal_frontend, portal_manager, bus, run, virtual_keyboard):
     """Through xdg-desktop-portal, as libportal (and so Synergy) uses it"""
     virtual_keyboard.assert_ok("clear_modifiers")
 
-    @Retry(ignore_exceptions=(Exception,))
-    def frontend_interface():
-        return bus.interface(
-            "org.freedesktop.portal.Desktop", OBJECT_PATH, "org.freedesktop.portal.InputCapture"
-        )
-
-    ic = frontend_interface()
+    ic = frontend_interface(bus, "org.freedesktop.portal.InputCapture")
     assert run(ic.get_version()) >= 2
 
-    def request(method, *args, token):
-        """Call a portal method that answers through a Request object."""
-        path = f"/org/freedesktop/portal/desktop/request/{bus.sender}/{token}"
-        responses = []
-
-        def handler(message):
-            if message.path == path and message.member == "Response":
-                responses.append(message.body)
-
-        bus.bus.add_message_handler(handler)
-        bus.call("AddMatch", f"type='signal',path='{path}'", signature="s")
-        run(method(*args))
-        bus.wait_until(lambda: responses)
-        return responses[0]
-
-    results = run(ic.call_create_session2({"session_handle_token": Variant("s", "s1")}))
-    session = results["session_handle"].value
-
-    options = {"handle_token": Variant("s", "r1"), "capabilities": Variant("u", CAPABILITIES)}
-    response, _ = request(ic.call_start, session, "", options, token="r1")
-    assert response == 0
-
-    options = {"handle_token": Variant("s", "r2")}
-    response, results = request(ic.call_get_zones, session, options, token="r2")
-    assert response == 0
-    [[width, height, x, y]] = results["zones"].value
-
-    options = {"handle_token": Variant("s", "r3")}
-    barriers = [right_barrier(width, height, x, y)]
-    zone_set = results["zone_set"].value
-    response, results = request(
-        ic.call_set_pointer_barriers, session, options, barriers, zone_set, token="r3"
-    )
-    assert response == 0
-    assert results["failed_barriers"].value == []
-
-    fd = run(ic.call_connect_to_eis(session, {}))
+    _, _, fd = start_frontend_capture(bus, run, ic, "r")
     with EIReceiver(portal_manager, fd) as receiver:
         wait_for_devices(receiver)
+
+
+def clipboard_interface(bus):
+    return bus.interface(BUS_NAME, OBJECT_PATH, "org.freedesktop.impl.portal.Clipboard")
+
+
+def start_session(bus, run, ic, token, *, request_clipboard=False):
+    """Create and start an input capture session, optionally asking for the clipboard first."""
+    session = f"/org/freedesktop/portal/desktop/session/{bus.sender}/{token}"
+    run(ic.call_create_session2(session, "", {}))
+    if request_clipboard:
+        run(clipboard_interface(bus).call_request_clipboard(session, {}))
+    response, results = run(
+        ic.call_start(
+            f"/request/{token}", session, "", "", {"capabilities": Variant("u", CAPABILITIES)}
+        )
+    )
+    return session, response, results
+
+
+def assert_access_denied(run, call):
+    with pytest.raises(DBusError) as error:
+        run(call)
+    assert error.value.type == ErrorType.ACCESS_DENIED
+
+
+def assert_failed(run, call):
+    with pytest.raises(DBusError) as error:
+        run(call)
+    assert error.value.type == ErrorType.FAILED
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_interface(portal_manager, bus, run):
+    """The Clipboard interface is exported beside InputCapture, at version 1"""
+    assert run(clipboard_interface(bus).get_version()) == 1
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_enabling(portal_manager, bus, run):
+    """RequestClipboard before Start enables the clipboard; a session that did not ask does not"""
+    ic = bus.interface(BUS_NAME, OBJECT_PATH, "org.freedesktop.impl.portal.InputCapture")
+    _, response, results = start_session(bus, run, ic, "asked", request_clipboard=True)
+    assert response == 0
+    assert results["clipboard_enabled"].value is True
+
+    _, response, results = start_session(bus, run, ic, "plain")
+    assert response == 0
+    assert "clipboard_enabled" not in results
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_needs_enabling(portal_manager, bus, run):
+    """Clipboard calls are refused unless the clipboard was enabled at Start"""
+    ic = bus.interface(BUS_NAME, OBJECT_PATH, "org.freedesktop.impl.portal.InputCapture")
+    clipboard = clipboard_interface(bus)
+    session, response, _ = start_session(bus, run, ic, "plain")
+    assert response == 0
+
+    # Asking after the session started does not enable it
+    run(clipboard.call_request_clipboard(session, {}))
+    selection = {"mime_types": Variant("as", ["text/plain"])}
+    assert_access_denied(run, clipboard.call_set_selection(session, selection))
+    assert_access_denied(run, clipboard.call_selection_read(session, "text/plain"))
+    assert_access_denied(run, clipboard.call_selection_write(session, 1))
+    assert_access_denied(run, clipboard.call_selection_write_done(session, 1, True))
+
+
+@pytest.mark.parametrize("wmanager", [RefusingPortalConfig], indirect=True)
+def test_portal_clipboard_refused(portal_manager, bus, run):
+    """A refused program's session never starts, so it never gets the clipboard"""
+    ic = bus.interface(BUS_NAME, OBJECT_PATH, "org.freedesktop.impl.portal.InputCapture")
+    session, response, _ = start_session(bus, run, ic, "refused", request_clipboard=True)
+    assert response == 2
+    selection = {"mime_types": Variant("as", ["text/plain"])}
+    assert_access_denied(run, clipboard_interface(bus).call_set_selection(session, selection))
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_unknown_data(portal_manager, bus, run):
+    """With no selection to read and no transfer under a serial, the calls fail"""
+    ic = bus.interface(BUS_NAME, OBJECT_PATH, "org.freedesktop.impl.portal.InputCapture")
+    clipboard = clipboard_interface(bus)
+    session, response, _ = start_session(bus, run, ic, "asked", request_clipboard=True)
+    assert response == 0
+
+    assert_failed(run, clipboard.call_selection_read(session, "text/plain"))
+    assert_failed(run, clipboard.call_selection_write(session, 7))
+    assert_failed(run, clipboard.call_selection_write_done(session, 7, True))
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_through_frontend(portal_frontend, portal_manager, bus, run):
+    """Through xdg-desktop-portal, RequestClipboard before Start enables the clipboard"""
+    ic = frontend_interface(bus, "org.freedesktop.portal.InputCapture")
+    clipboard = frontend_interface(bus, "org.freedesktop.portal.Clipboard")
+    assert run(clipboard.get_version()) >= 1
+
+    results = run(ic.call_create_session2({"session_handle_token": Variant("s", "c1")}))
+    session = results["session_handle"].value
+    run(clipboard.call_request_clipboard(session, {}))
+
+    options = {"handle_token": Variant("s", "c2"), "capabilities": Variant("u", CAPABILITIES)}
+    response, results = request(bus, run, ic.call_start, session, "", options, token="c2")
+    assert response == 0
+    assert results["clipboard_enabled"].value is True
+
+
+def record_signals(clipboard):
+    """Collect the Clipboard signals of a proxy: owner changes as dicts, and transfers."""
+    signals = {"owner": [], "transfer": []}
+    clipboard.on_selection_owner_changed(
+        lambda handle, options: signals["owner"].append({k: v.value for k, v in options.items()})
+    )
+    clipboard.on_selection_transfer(
+        lambda handle, mime_type, serial: signals["transfer"].append((mime_type, serial))
+    )
+    return signals
+
+
+def start_paste(wmanager, mime_type="text/plain"):
+    """Start wl-paste without waiting, so the test can answer the transfer it causes."""
+    return subprocess.Popen(
+        ["wl-paste", "--no-newline", "--type", mime_type],
+        env=make_test_env(wmanager),
+        stdout=subprocess.PIPE,
+    )
+
+
+def answer_paste(bus, run, clipboard, session, signals, proc, payload):
+    """Serve a paste the way Synergy does: write the payload, then report success."""
+    bus.wait_until(lambda: signals["transfer"])
+    mime_type, serial = signals["transfer"].pop(0)
+    assert mime_type == "text/plain"
+    fd = run(clipboard.call_selection_write(session, serial))
+    with os.fdopen(fd, "wb") as f:
+        f.write(payload)
+    run(clipboard.call_selection_write_done(session, serial, True))
+    stdout, _ = proc.communicate(timeout=10)
+    return stdout
+
+
+def set_portal_constant(wmanager, name, value):
+    wmanager.c.eval(f"{HELPER}.set_portal_constant({name!r}, {value!r})")
+
+
+def started_clipboard_session(bus, run, token):
+    """An allowed session that asked for the clipboard before it started."""
+    ic = bus.interface(BUS_NAME, OBJECT_PATH, "org.freedesktop.impl.portal.InputCapture")
+    session, response, _ = start_session(bus, run, ic, token, request_clipboard=True)
+    assert response == 0
+    return session
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_client_copy_is_read(request, portal_manager, bus, run):
+    """A client's copy is announced to the session, and SelectionRead returns its text"""
+    copy_text = request.getfixturevalue("copy")
+    clipboard = clipboard_interface(bus)
+    signals = record_signals(clipboard)
+    session = started_clipboard_session(bus, run, "reader")
+
+    copy_text("hello")
+    bus.wait_until(lambda: any("text/plain" in o["mime_types"] for o in signals["owner"]))
+    announced = [o for o in signals["owner"] if "text/plain" in o["mime_types"]]
+    assert announced[-1]["session_is_owner"] is False
+
+    fd = run(clipboard.call_selection_read(session, "text/plain"))
+    with os.fdopen(fd, "rb") as f:
+        assert f.read() == b"hello"
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_set_selection_is_pasted(portal_manager, bus, run):
+    """SetSelection makes the session the owner, and a paste gets the payload it writes"""
+    wmanager = portal_manager
+    clipboard = clipboard_interface(bus)
+    signals = record_signals(clipboard)
+    session = started_clipboard_session(bus, run, "source")
+
+    run(clipboard.call_set_selection(session, {"mime_types": Variant("as", MIME_TYPES)}))
+    bus.wait_until(lambda: any(o["session_is_owner"] for o in signals["owner"]))
+    assert set(signals["owner"][-1]["mime_types"]) == set(MIME_TYPES)
+    assert signals["owner"][-1]["session_is_owner"] is True
+
+    proc = start_paste(wmanager)
+    assert answer_paste(bus, run, clipboard, session, signals, proc, b"payload") == b"payload"
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_empty_set_selection_keeps_clipboard(portal_manager, bus, run):
+    """An empty SetSelection clears the source only; the clipboard stays enabled"""
+    wmanager = portal_manager
+    clipboard = clipboard_interface(bus)
+    signals = record_signals(clipboard)
+    session = started_clipboard_session(bus, run, "clear")
+
+    run(clipboard.call_set_selection(session, {"mime_types": Variant("as", MIME_TYPES)}))
+    bus.wait_until(lambda: any(o["session_is_owner"] for o in signals["owner"]))
+
+    run(clipboard.call_set_selection(session, {"mime_types": Variant("as", [])}))
+    bus.wait_until(lambda: signals["owner"][-1]["mime_types"] == [])
+    # Still enabled: with no selection the read fails, rather than being refused
+    assert_failed(run, clipboard.call_selection_read(session, "text/plain"))
+
+    run(clipboard.call_set_selection(session, {"mime_types": Variant("as", MIME_TYPES)}))
+    bus.wait_until(lambda: signals["owner"][-1]["session_is_owner"])
+    proc = start_paste(wmanager)
+    assert answer_paste(bus, run, clipboard, session, signals, proc, b"again") == b"again"
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_unanswered_transfer_times_out(portal_manager, bus, run):
+    """An unanswered paste ends at TRANSFER_TIMEOUT, and the portal's fd is closed"""
+    wmanager = portal_manager
+    clipboard = clipboard_interface(bus)
+    signals = record_signals(clipboard)
+    session = started_clipboard_session(bus, run, "silent")
+    set_portal_constant(wmanager, "TRANSFER_TIMEOUT", 0.5)
+    before = settled_fd_count(wmanager)
+
+    run(clipboard.call_set_selection(session, {"mime_types": Variant("as", MIME_TYPES)}))
+    proc = start_paste(wmanager)
+    bus.wait_until(lambda: signals["transfer"])
+    started = time.monotonic()
+    # Without the timer this waits forever on the portal's fd
+    stdout, _ = proc.communicate(timeout=10)
+    assert time.monotonic() - started < 5
+    assert stdout == b""
+    assert settled_fd_count(wmanager) == before
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_close_clears_selection(portal_manager, bus, run):
+    """Closing a session that owns the selection clears it"""
+    wmanager = portal_manager
+    clipboard = clipboard_interface(bus)
+    signals = record_signals(clipboard)
+    session = started_clipboard_session(bus, run, "owner")
+
+    run(clipboard.call_set_selection(session, {"mime_types": Variant("as", MIME_TYPES)}))
+    bus.wait_until(lambda: any(o["session_is_owner"] for o in signals["owner"]))
+    assert list_types(wmanager).returncode == 0
+
+    session_object = bus.interface(BUS_NAME, session, "org.freedesktop.impl.portal.Session")
+    run(session_object.call_close())
+    assert list_types(wmanager).returncode != 0
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_close_closes_pending_transfer(portal_manager, bus, run):
+    """Closing a session during a paste closes the transfer fd it holds"""
+    wmanager = portal_manager
+    # A started session holds fds of its own, so the count is compared with the one before it
+    idle = settled_fd_count(wmanager)
+    clipboard = clipboard_interface(bus)
+    signals = record_signals(clipboard)
+    session = started_clipboard_session(bus, run, "pending")
+
+    run(clipboard.call_set_selection(session, {"mime_types": Variant("as", MIME_TYPES)}))
+    bus.wait_until(lambda: any(o["session_is_owner"] for o in signals["owner"]))
+    before = settled_fd_count(wmanager)
+
+    proc = start_paste(wmanager)
+    bus.wait_until(lambda: signals["transfer"])
+    assert settled_fd_count(wmanager) > before
+
+    session_object = bus.interface(BUS_NAME, session, "org.freedesktop.impl.portal.Session")
+    run(session_object.call_close())
+    # wl-paste ends only at end-of-file, which needs the portal's copy of the write end closed
+    assert proc.communicate(timeout=10)[0] == b""
+    assert settled_fd_count(wmanager) == idle
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_close_closes_returned_read(request, portal_manager, bus, run):
+    """Closing a session closes the read fds SelectionRead returned and the portal kept"""
+    copy_text = request.getfixturevalue("copy")
+    wmanager = portal_manager
+    clipboard = clipboard_interface(bus)
+    copy_text("held")
+    idle = settled_fd_count(wmanager)
+    session = started_clipboard_session(bus, run, "reader")
+    before = settled_fd_count(wmanager)
+
+    fd = run(clipboard.call_selection_read(session, "text/plain"))
+    with os.fdopen(fd, "rb") as f:
+        assert f.read() == b"held"
+    # The portal keeps its own copy of the read end until the linger ends or the session closes
+    assert settled_fd_count(wmanager) == before + 1
+
+    session_object = bus.interface(BUS_NAME, session, "org.freedesktop.impl.portal.Session")
+    run(session_object.call_close())
+    assert settled_fd_count(wmanager) == idle
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_no_fd_leak(request, portal_manager, bus, run):
+    """Repeated reads and transfers leave no fd open once their lingers have ended"""
+    copy_text = request.getfixturevalue("copy")
+    wmanager = portal_manager
+    clipboard = clipboard_interface(bus)
+    signals = record_signals(clipboard)
+    session = started_clipboard_session(bus, run, "leak")
+    set_portal_constant(wmanager, "RETURNED_FD_LINGER", 0.5)
+
+    copy_text("client")
+    before = settled_fd_count(wmanager)
+    for _ in range(10):
+        fd = run(clipboard.call_selection_read(session, "text/plain"))
+        with os.fdopen(fd, "rb") as f:
+            assert f.read() == b"client"
+    bus.wait_until(lambda: settled_fd_count(wmanager) == before)
+
+    # Replacing the wl-copy selection ends wl-copy, so the transfers are measured from here
+    run(clipboard.call_set_selection(session, {"mime_types": Variant("as", MIME_TYPES)}))
+    bus.wait_until(lambda: any(o["session_is_owner"] for o in signals["owner"]))
+    before = settled_fd_count(wmanager)
+    for _ in range(10):
+        proc = start_paste(wmanager)
+        assert answer_paste(bus, run, clipboard, session, signals, proc, b"payload") == b"payload"
+    assert settled_fd_count(wmanager) == before
+
+
+@pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
+def test_portal_clipboard_through_frontend_data(
+    request, portal_frontend, portal_manager, bus, run, virtual_pointer
+):
+    """Through xdg-desktop-portal, an active session reads and supplies the clipboard"""
+    copy_text = request.getfixturevalue("copy")
+    wmanager = portal_manager
+    width, height, x, y = zone(wmanager)
+    ic = frontend_interface(bus, "org.freedesktop.portal.InputCapture")
+    clipboard = frontend_interface(bus, "org.freedesktop.portal.Clipboard")
+    signals = record_signals(clipboard)
+    activated = []
+    ic.on_activated(lambda handle, options: activated.append(handle))
+
+    session, start_results, fd = start_frontend_capture(bus, run, ic, "d", clipboard)
+    assert start_results["clipboard_enabled"].value is True
+    with EIReceiver(wmanager, fd) as receiver:
+        wait_for_devices(receiver)
+        run(ic.call_enable(session, {}))
+        wmanager.c.eval(f"self.core.warp_pointer({width - 10}, {height // 2})")
+        virtual_pointer.assert_ok("motion 20 0")
+        bus.wait_until(lambda: activated)
+
+        # While the capture is active, a Fedora copy is read for the Mac
+        copy_text("from fedora")
+        bus.wait_until(lambda: any("text/plain" in o["mime_types"] for o in signals["owner"]))
+        fd = run(clipboard.call_selection_read(session, "text/plain"))
+        with os.fdopen(fd, "rb") as f:
+            assert f.read() == b"from fedora"
+
+        # A Mac selection is served to a Fedora paste through the frontend
+        run(clipboard.call_set_selection(session, {"mime_types": Variant("as", MIME_TYPES)}))
+        bus.wait_until(lambda: any(o["session_is_owner"] for o in signals["owner"]))
+        proc = start_paste(wmanager)
+        assert (
+            answer_paste(bus, run, clipboard, session, signals, proc, b"from mac") == b"from mac"
+        )
