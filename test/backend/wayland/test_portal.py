@@ -12,10 +12,11 @@ from dbus_fast.aio import MessageBus
 
 from libqtile.config import Key
 from libqtile.lazy import lazy
-from test.backend.wayland.conftest import ClientHandler, make_test_env
-from test.backend.wayland.test_clipboard import (
-    copy,  # noqa: F401, the fixture is requested by name
+from test.backend.wayland.conftest import (
+    CLIPBOARD_HELPER,
+    ClientHandler,
     list_types,
+    make_test_env,
     settled_fd_count,
 )
 from test.backend.wayland.test_input_capture import EIReceiver, zone
@@ -24,7 +25,6 @@ from test.helpers import BareConfig, Retry
 BUS_NAME = "org.freedesktop.impl.portal.desktop.qtile"
 OBJECT_PATH = "/org/freedesktop/portal/desktop"
 PORTAL_FILE = Path(__file__).parents[3] / "libqtile" / "resources" / "portal" / "qtile.portal"
-HELPER = '__import__("test.backend.wayland.clipboard_helper", fromlist=["_"])'
 
 # The tests talk to the portal from this process, which the allowlist sees by executable
 TEST_EXECUTABLE = os.readlink("/proc/self/exe")
@@ -539,7 +539,7 @@ def answer_paste(bus, run, clipboard, session, signals, proc, payload):
 
 
 def set_portal_constant(wmanager, name, value):
-    wmanager.c.eval(f"{HELPER}.set_portal_constant({name!r}, {value!r})")
+    wmanager.c.eval(f"{CLIPBOARD_HELPER}.set_portal_constant({name!r}, {value!r})")
 
 
 def started_clipboard_session(bus, run, token):
@@ -551,14 +551,13 @@ def started_clipboard_session(bus, run, token):
 
 
 @pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
-def test_portal_clipboard_client_copy_is_read(request, portal_manager, bus, run):
+def test_portal_clipboard_client_copy_is_read(portal_manager, bus, run, copy):
     """A client's copy is announced to the session, and SelectionRead returns its text"""
-    copy_text = request.getfixturevalue("copy")
     clipboard = clipboard_interface(bus)
     signals = record_signals(clipboard)
     session = started_clipboard_session(bus, run, "reader")
 
-    copy_text("hello")
+    copy("hello")
     bus.wait_until(lambda: any("text/plain" in o["mime_types"] for o in signals["owner"]))
     announced = [o for o in signals["owner"] if "text/plain" in o["mime_types"]]
     assert announced[-1]["session_is_owner"] is False
@@ -671,12 +670,11 @@ def test_portal_clipboard_close_closes_pending_transfer(portal_manager, bus, run
 
 
 @pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
-def test_portal_clipboard_close_closes_returned_read(request, portal_manager, bus, run):
+def test_portal_clipboard_close_closes_returned_read(portal_manager, bus, run, copy):
     """Closing a session closes the read fds SelectionRead returned and the portal kept"""
-    copy_text = request.getfixturevalue("copy")
     wmanager = portal_manager
     clipboard = clipboard_interface(bus)
-    copy_text("held")
+    copy("held")
     idle = settled_fd_count(wmanager)
     session = started_clipboard_session(bus, run, "reader")
     before = settled_fd_count(wmanager)
@@ -693,16 +691,15 @@ def test_portal_clipboard_close_closes_returned_read(request, portal_manager, bu
 
 
 @pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
-def test_portal_clipboard_no_fd_leak(request, portal_manager, bus, run):
+def test_portal_clipboard_no_fd_leak(portal_manager, bus, run, copy):
     """Repeated reads and transfers leave no fd open once their lingers have ended"""
-    copy_text = request.getfixturevalue("copy")
     wmanager = portal_manager
     clipboard = clipboard_interface(bus)
     signals = record_signals(clipboard)
     session = started_clipboard_session(bus, run, "leak")
     set_portal_constant(wmanager, "RETURNED_FD_LINGER", 0.5)
 
-    copy_text("client")
+    copy("client")
     before = settled_fd_count(wmanager)
     for _ in range(10):
         fd = run(clipboard.call_selection_read(session, "text/plain"))
@@ -722,10 +719,9 @@ def test_portal_clipboard_no_fd_leak(request, portal_manager, bus, run):
 
 @pytest.mark.parametrize("wmanager", [PortalConfig], indirect=True)
 def test_portal_clipboard_through_frontend_data(
-    request, portal_frontend, portal_manager, bus, run, virtual_pointer
+    portal_frontend, portal_manager, bus, run, virtual_pointer, copy
 ):
     """Through xdg-desktop-portal, an active session reads and supplies the clipboard"""
-    copy_text = request.getfixturevalue("copy")
     wmanager = portal_manager
     width, height, x, y = zone(wmanager)
     ic = frontend_interface(bus, "org.freedesktop.portal.InputCapture")
@@ -744,7 +740,7 @@ def test_portal_clipboard_through_frontend_data(
         bus.wait_until(lambda: activated)
 
         # While the capture is active, a Fedora copy is read for the Mac
-        copy_text("from fedora")
+        copy("from fedora")
         bus.wait_until(lambda: any("text/plain" in o["mime_types"] for o in signals["owner"]))
         fd = run(clipboard.call_selection_read(session, "text/plain"))
         with os.fdopen(fd, "rb") as f:

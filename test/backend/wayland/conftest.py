@@ -1,3 +1,4 @@
+import ast
 import contextlib
 import fcntl
 import os
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from test.helpers import BareConfig, TestManager
+from test.helpers import BareConfig, Retry, TestManager
 
 try:
     from libqtile.backend.wayland.core import Core
@@ -334,3 +335,71 @@ def test_client(wmanager, request):
 def virtual_keyboard(wmanager):
     with ClientHandler("virtual-keyboard", wmanager) as keyboard:
         yield keyboard
+
+
+CLIPBOARD_HELPER = '__import__("test.backend.wayland.clipboard_helper", fromlist=["_"])'
+CLIPBOARD = '__import__("libqtile.backend.wayland.clipboard", fromlist=["_"])'
+
+
+def qtile_eval(wmanager, expr):
+    """The value of an expression evaluated inside Qtile."""
+    return ast.literal_eval(wmanager.c.eval(f"repr({expr})"))
+
+
+def wait_until(predicate):
+    @Retry(ignore_exceptions=(AssertionError,))
+    def check():
+        assert predicate()
+
+    check()
+
+
+def selection_types(wmanager):
+    return qtile_eval(wmanager, f"{CLIPBOARD}.selection_mime_types(self.core)")
+
+
+def list_types(wmanager):
+    return subprocess.run(
+        ["wl-paste", "--list-types"],
+        env=make_test_env(wmanager),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+def fd_count(wmanager):
+    return qtile_eval(wmanager, f"{CLIPBOARD_HELPER}.fd_count()")
+
+
+def settled_fd_count(wmanager):
+    """The fd count once it stops changing: closed pasting clients are noticed a moment late."""
+    previous = None
+    for _ in range(50):
+        current = fd_count(wmanager)
+        if current == previous:
+            return current
+        previous = current
+        time.sleep(0.1)
+    return current
+
+
+@pytest.fixture
+def copy(wmanager):
+    """Make a client selection with wl-copy; the process is killed at teardown."""
+    procs = []
+
+    def copy_text(text):
+        proc = subprocess.Popen(
+            ["wl-copy", "--foreground", "--type", "text/plain", text],
+            env=make_test_env(wmanager),
+        )
+        procs.append(proc)
+        wait_until(lambda: "text/plain" in selection_types(wmanager))
+        return proc
+
+    yield copy_text
+
+    for proc in procs:
+        proc.kill()
+        proc.wait()
