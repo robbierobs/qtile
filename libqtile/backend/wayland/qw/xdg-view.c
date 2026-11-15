@@ -98,6 +98,14 @@ static void qw_xdg_view_hide(void *self) {
     qw_cursor_update_pointer_focus(xdg_view->base.server->cursor);
 }
 
+// wlroots destroys the scene tree with its surface, so clear the pointer then.
+static void qw_xdg_view_handle_scene_tree_destroy(struct wl_listener *listener, void *data) {
+    UNUSED(data);
+    struct qw_xdg_view *xdg_view = wl_container_of(listener, xdg_view, scene_tree_destroy);
+    wl_list_remove(&xdg_view->scene_tree_destroy.link);
+    xdg_view->scene_tree = NULL;
+}
+
 // Handle the unmap event for the xdg_view (when it's hidden/unmapped)
 static void qw_xdg_view_handle_unmap(struct wl_listener *listener, void *data) {
     UNUSED(data);
@@ -710,6 +718,10 @@ void qw_server_xdg_view_new(struct qw_server *server, struct wlr_xdg_toplevel *x
     // Create scene node for the toplevel surface under the content tree
     xdg_view->scene_tree =
         wlr_scene_xdg_surface_create(xdg_view->base.content_tree, xdg_toplevel->base);
+    if (xdg_view->scene_tree != NULL) {
+        xdg_view->scene_tree_destroy.notify = qw_xdg_view_handle_scene_tree_destroy;
+        wl_signal_add(&xdg_view->scene_tree->node.events.destroy, &xdg_view->scene_tree_destroy);
+    }
     xdg_toplevel->base->data = xdg_view;
 
     // Mirror the surface into a private scene for per-window capture
