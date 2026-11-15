@@ -507,6 +507,8 @@ def build_c_objects(config: BuildConfig, *, debug: bool = False, asan: bool = Fa
         cmd.setup_shlib_compiler()
 
         preargs = ["-g3", "-Og"] if (debug or asan) else ["-O2"]
+        if asan:
+            preargs += ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
         preargs += ["-fPIC", "-Wall", "-Wextra"]
 
         cmd.shlib_compiler.compile(

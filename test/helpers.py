@@ -366,6 +366,8 @@ class TestManager:
             env = os.environ.copy()
             env.pop("DISPLAY", None)
             env.pop("WAYLAND_DISPLAY", None)
+            # An ASan preload makes GTK clients' sandboxed image loader fail to start.
+            env.pop("LD_PRELOAD", None)
             env.update(self.backend.env)
             proc = subprocess.Popen(args, env=env)
 
