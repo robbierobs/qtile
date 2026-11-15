@@ -142,7 +142,7 @@ static void qw_xdg_view_handle_destroy(struct wl_listener *listener, void *data)
     free(xdg_view);
 }
 
-static void qw_xdg_view_clip(struct qw_xdg_view *xdg_view);
+static void qw_xdg_view_clip(void *self);
 
 // Handle commit event: called when surface commits state changes
 static void qw_xdg_view_handle_commit(struct wl_listener *listener, void *data) {
@@ -187,20 +187,10 @@ static void qw_xdg_view_handle_commit(struct wl_listener *listener, void *data) 
 }
 
 // Clip the xdg_view's scene tree if needed
-static void qw_xdg_view_clip(struct qw_xdg_view *xdg_view) {
-    // Only clip if scene_tree exists, node is disabled, and node is linked
-    if (!xdg_view->scene_tree) {
-        return;
-    }
-    if (!xdg_view->scene_tree->node.enabled) {
-        return;
-    }
-    if (!xdg_view->scene_tree->node.link.next) {
-        return;
-    }
-
+static void qw_xdg_view_clip(void *self) {
+    struct qw_xdg_view *xdg_view = (struct qw_xdg_view *)self;
     // clang-format off
-    struct wlr_box clip = {
+    struct wlr_box own_clip = {
         .x = xdg_view->geom.x,
         .y = xdg_view->geom.y,
         .width = xdg_view->base.width,
@@ -208,8 +198,7 @@ static void qw_xdg_view_clip(struct qw_xdg_view *xdg_view) {
     };
     // clang-format on
 
-    // Apply clipping to subsurface tree
-    wlr_scene_subsurface_tree_set_clip(&xdg_view->scene_tree->node, &clip);
+    qw_view_apply_surface_clip(&xdg_view->base, xdg_view->scene_tree, &own_clip);
 }
 
 void dump_surface_outputs(void *self) {
@@ -519,6 +508,9 @@ static void qw_xdg_view_handle_map(struct wl_listener *listener, void *data) {
 
     xdg_view->base.server->manage_view_cb((struct qw_view *)&xdg_view->base,
                                           xdg_view->base.server->cb_data);
+    if (xdg_view->base.has_clip) {
+        qw_xdg_view_clip(xdg_view);
+    }
 
     // Add listeners with Python callbacks after the view has been managed
     xdg_view->request_maximize.notify = qw_xdg_view_handle_request_maximize;
@@ -740,6 +732,7 @@ void qw_server_xdg_view_new(struct qw_server *server, struct wlr_xdg_toplevel *x
     xdg_view->base.hide = qw_xdg_view_hide;
     xdg_view->base.unhide = qw_xdg_view_unhide;
     xdg_view->base.has_fixed_size = qw_xdg_view_has_fixed_size;
+    xdg_view->base.clip = qw_xdg_view_clip;
 
     // Add listeners for surface lifecycle events (map, unmap, commit)
     xdg_view->map.notify = qw_xdg_view_handle_map;
