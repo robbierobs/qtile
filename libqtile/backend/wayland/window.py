@@ -979,7 +979,6 @@ class Static(Base, base.Static):
         self._height = height
 
         n = 0
-        lib.qw_view_set_clip(self._ptr, False, 0, 0, 0, 0)
         self._ptr.place(self._ptr, x, y, width, height, ffi.NULL, n, int(above))
 
     @expose_command()
