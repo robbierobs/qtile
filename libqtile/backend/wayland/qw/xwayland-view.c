@@ -286,7 +286,10 @@ static void qw_xwayland_view_clip(void *self) {
     };
     // clang-format on
 
-    qw_view_apply_surface_clip(&xwayland_view->base, xwayland_view->scene_tree, &own_clip);
+    // A fixed-size XWayland surface can be larger than its box, so the box clip only
+    // applies while clip_to is set; NULL leaves the surface tree unclipped.
+    qw_view_apply_surface_clip(&xwayland_view->base, xwayland_view->scene_tree,
+                               xwayland_view->base.has_clip ? &own_clip : NULL);
 }
 
 // Place the xwayland_view at given position and size with border and stacking info
