@@ -66,6 +66,16 @@ def on_output2(wmanager):
     return edge(wmanager) + 100, MID_Y
 
 
+def plain_box(wmanager):
+    """A window below the clipped one that also straddles the first output's edge."""
+    return edge(wmanager) - 50, 400, 200, 100
+
+
+def plain_points(wmanager):
+    """One point inside plain_box on each output."""
+    return (edge(wmanager) - 25, 450), (edge(wmanager) + 100, 450)
+
+
 def hovered_at(wmanager, x, y):
     """Name of the window the pointer hovers at (x, y), or None."""
     wmanager.c.eval("setattr(self, 'hovered_window', None)")
@@ -233,17 +243,18 @@ def test_clip_on_hidden_window_then_kill(wmanager, kind, x11_conn, capfd):
 def test_unclipped_window_is_unaffected_by_clipping_another(wmanager, kind, x11_conn):
     """C6: a window that never calls clip_to reports the same info and hover results."""
     new_xdg_client(wmanager, PLAIN_NAME)
-    plain = place_window(wmanager, PLAIN_NAME, (100, 400, 200, 100))
+    plain = place_window(wmanager, PLAIN_NAME, plain_box(wmanager))
+    info_before = plain.info()
+    hover_before = [hovered_at(wmanager, *point) for point in plain_points(wmanager)]
+
     name = open_window(wmanager, kind, x11_conn)
     window = place_window(wmanager, name, straddling_box(wmanager))
-    info_before = plain.info()
-    inside_plain = (150, 450)
-    assert hovered_at(wmanager, *inside_plain) == PLAIN_NAME
-
     clip_to_output(window, wmanager, 0)
 
     assert plain.info() == info_before
-    assert hovered_at(wmanager, *inside_plain) == PLAIN_NAME
+    hover_after = [hovered_at(wmanager, *point) for point in plain_points(wmanager)]
+    assert hover_after == hover_before
+    assert hover_after == [PLAIN_NAME, PLAIN_NAME]
     assert hovered_at(wmanager, *on_output2(wmanager)) is None
 
 
