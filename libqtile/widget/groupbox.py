@@ -16,6 +16,9 @@ class _GroupBase(base._TextBox, base.PaddingMixin, base.MarginMixin):
     def __init__(self, **config):
         base._TextBox.__init__(self, **config)
         self.add_defaults(_GroupBase.defaults)
+        # Length the bar last drew this widget with; a widget-only draw is pending
+        self._drawn_length = None
+        self._draw_pending = False
 
     def box_width(self, groups):
         width, _ = self.drawer.max_layout_size(
@@ -36,7 +39,17 @@ class _GroupBase(base._TextBox, base.PaddingMixin, base.MarginMixin):
         self.setup_hooks()
 
     def _hook_response(self, *args, **kwargs):
-        self.bar.draw()
+        if self.length != self._drawn_length:
+            self.bar.draw()
+        elif not (self._draw_pending or self.bar._draw_queued):
+            # A bar draw queued for this loop iteration already draws this widget
+            self._draw_pending = True
+            self.qtile.call_soon(self._draw_pending_widget)
+
+    def _draw_pending_widget(self):
+        self._draw_pending = False
+        if not self.finalized:
+            self.draw()
 
     def setup_hooks(self):
         hook.subscribe.client_managed(self._hook_response)
@@ -125,6 +138,7 @@ class AGroupBox(_GroupBase):
         return self.box_width(self.qtile.groups) + self.margin_x * 2
 
     def draw(self):
+        self._drawn_length = self.length
         self.drawer.clear(self.background or self.bar.background)
         e = next(i for i in self.qtile.groups if i.name == self.bar.screen.group.name)
         self.drawbox(self.margin_x, e.name, self.border, self.foreground)
@@ -309,6 +323,7 @@ class GroupBox(_GroupBase):
         return any(w.urgent for w in group.windows)
 
     def draw(self):
+        self._drawn_length = self.length
         self.drawer.clear(self.background or self.bar.background)
 
         offset = self.margin_x
