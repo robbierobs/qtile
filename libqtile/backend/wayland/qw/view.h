@@ -126,17 +126,21 @@ struct qw_view {
     const char *(*get_wm_type)(void *self);
     bool (*has_fixed_size)(void *self);
     int (*get_parent)(void *self);
+    void (*clip)(void *self);
 
     // Private data: pointer to an array of 4 pointers to wlr_scene_rect for borders
     struct {
         enum qw_border_type type;
         uint32_t width;
         float color[4][4];
+        struct wlr_box boxes[4];
         union {
             struct wlr_scene_rect *rects[4];
             struct wlr_scene_buffer *scene_bufs[4];
         };
     } *borders;
+    bool has_clip;
+    struct wlr_box clip_box;
     struct wl_listener ftl_request_activate;
     struct wl_listener ftl_request_close;
     struct wl_listener ftl_request_maximize;
@@ -186,6 +190,10 @@ int qw_view_get_layer(struct qw_view *view);
 void qw_view_grab_click(struct qw_view *view);
 void qw_view_ungrab_click(struct qw_view *view);
 void qw_view_set_opacity(struct qw_view *view, float opacity);
+
+void qw_view_set_clip(struct qw_view *view, bool enabled, int x, int y, int width, int height);
+void qw_view_apply_surface_clip(struct qw_view *view, struct wlr_scene_tree *scene_tree,
+                                const struct wlr_box *own_clip);
 
 void qw_view_update_ftl_outputs(struct qw_view *view, struct wlr_surface *surface);
 #endif /* VIEW_H */
