@@ -7,6 +7,9 @@
 #include <wlr/util/box.h>
 
 #define QW_INPUT_CAPTURE_MAX_ZONES 16
+// How far the pointer must move from a barrier crossing the receiver released in place
+// before the barriers can activate again
+#define QW_INPUT_CAPTURE_REARM_DISTANCE 32
 
 struct qw_server;
 struct qw_keyboard;
@@ -44,6 +47,13 @@ struct qw_input_capture {
     bool enabled;
     bool active;
     uint32_t activation_id;
+
+    // Where the last activation crossed its barrier. A receiver that releases without
+    // moving the cursor has refused the activation; the pointer is still against the
+    // barrier and would activate again on every motion, so the barriers stay disarmed
+    // until it has moved away.
+    double crossed_x, crossed_y;
+    bool disarmed;
 
     // Keys and buttons pressed while active, which must be released before deactivating
     uint32_t pressed_keys[32];

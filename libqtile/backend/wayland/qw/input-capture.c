@@ -287,6 +287,7 @@ void qw_input_capture_clear_barriers(struct qw_input_capture *capture) {
     free(capture->barriers);
     capture->barriers = NULL;
     capture->barrier_count = 0;
+    capture->disarmed = false;
 }
 
 bool qw_input_capture_add_barrier(struct qw_input_capture *capture, uint32_t id, int x1, int y1,
@@ -387,6 +388,7 @@ void qw_input_capture_release(struct qw_input_capture *capture, uint32_t activat
         return;
     }
     qw_input_capture_deactivate(capture, false, has_position, x, y);
+    capture->disarmed = !has_position;
 }
 
 void qw_server_set_input_capture_release_key(struct qw_server *server, uint32_t keysym,
@@ -421,9 +423,10 @@ static void qw_input_capture_activate(struct qw_input_capture *capture,
     }
 }
 
-// Whether moving from (x, y) to (nx, ny) crosses the barrier
+// Whether moving from (x, y) to (nx, ny) crosses the barrier, and if so where
 static bool qw_input_capture_barrier_crossed(const struct qw_input_capture_barrier *barrier,
-                                             double x, double y, double nx, double ny) {
+                                             double x, double y, double nx, double ny,
+                                             double *crossed_x, double *crossed_y) {
     // Barriers sit on the top or left edge of their pixels. The cursor is clamped to just
     // inside the layout, so it never reaches a right or bottom barrier without crossing.
     if (barrier->x1 == barrier->x2) {
@@ -432,6 +435,8 @@ static bool qw_input_capture_barrier_crossed(const struct qw_input_capture_barri
             return false;
         }
         double yc = y + (ny - y) * (bx - x) / (nx - x);
+        *crossed_x = bx;
+        *crossed_y = yc;
         return yc >= barrier->y1 && yc < barrier->y2 + 1;
     }
 
@@ -440,7 +445,20 @@ static bool qw_input_capture_barrier_crossed(const struct qw_input_capture_barri
         return false;
     }
     double xc = x + (nx - x) * (by - y) / (ny - y);
+    *crossed_x = xc;
+    *crossed_y = by;
     return xc >= barrier->x1 && xc < barrier->x2 + 1;
+}
+
+static bool qw_input_capture_is_disarmed(struct qw_input_capture *capture, double x, double y) {
+    if (!capture->disarmed) {
+        return false;
+    }
+    double dx = x - capture->crossed_x;
+    double dy = y - capture->crossed_y;
+    double rearm = QW_INPUT_CAPTURE_REARM_DISTANCE;
+    capture->disarmed = dx * dx + dy * dy < rearm * rearm;
+    return capture->disarmed;
 }
 
 bool qw_input_capture_check_barriers(struct qw_server *server, double x, double y, double dx,
@@ -452,12 +470,17 @@ bool qw_input_capture_check_barriers(struct qw_server *server, double x, double 
     struct qw_input_capture *capture;
     wl_list_for_each(capture, &server->input_captures, link) {
         // Without a pointer device the receiver cannot follow the capture
-        if (!capture->enabled || capture->pointer == NULL) {
+        if (!capture->enabled || capture->pointer == NULL ||
+            qw_input_capture_is_disarmed(capture, x, y)) {
             continue;
         }
         for (size_t i = 0; i < capture->barrier_count; i++) {
             const struct qw_input_capture_barrier *barrier = &capture->barriers[i];
-            if (qw_input_capture_barrier_crossed(barrier, x, y, x + dx, y + dy)) {
+            double crossed_x, crossed_y;
+            if (qw_input_capture_barrier_crossed(barrier, x, y, x + dx, y + dy, &crossed_x,
+                                                 &crossed_y)) {
+                capture->crossed_x = crossed_x;
+                capture->crossed_y = crossed_y;
                 qw_input_capture_activate(capture, barrier, x + dx, y + dy);
                 return true;
             }
