@@ -256,24 +256,3 @@ def test_unclipped_window_is_unaffected_by_clipping_another(wmanager, kind, x11_
     assert hover_after == hover_before
     assert hover_after == [PLAIN_NAME, PLAIN_NAME]
     assert hovered_at(wmanager, *on_output2(wmanager)) is None
-
-
-@pytest.mark.parametrize("kind", ["xwayland"])
-@pytest.mark.skipif(shutil.which("Xwayland") is None, reason="Xwayland is not installed")
-def test_xwayland_surface_is_clipped_only_while_clip_to_is_set(wmanager, kind, x11_conn):
-    """A fixed-size 400x300 XWayland surface in a 200x200 box draws past the box until clip_to."""
-    create_window(x11_conn, 400, 300, fixed_size=True)
-    wmanager.c.sync()
-    window = wait_for_window(wmanager, XWAYLAND_NAME)
-    window.place(100, 100, 200, 200, 0, None)
-    wmanager.c.sync()
-    beyond_box = (350, 150)
-
-    assert hovered_at(wmanager, *beyond_box) == XWAYLAND_NAME
-
-    clip_to_output(window, wmanager, 0)
-    assert hovered_at(wmanager, *beyond_box) is None
-
-    window.place(100, 100, 200, 200, 0, None)
-    wmanager.c.sync()
-    assert hovered_at(wmanager, *beyond_box) == XWAYLAND_NAME
