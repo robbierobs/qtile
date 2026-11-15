@@ -39,16 +39,18 @@ class _GroupBase(base._TextBox, base.PaddingMixin, base.MarginMixin):
         self.setup_hooks()
 
     def _hook_response(self, *args, **kwargs):
-        if self.length != self._drawn_length:
-            self.bar.draw()
-        elif not (self._draw_pending or self.bar._draw_queued):
-            # A bar draw queued for this loop iteration already draws this widget
+        # A queued bar draw already draws this widget; the length is checked once, in the callback
+        if not (self._draw_pending or self.bar._draw_queued):
             self._draw_pending = True
             self.qtile.call_soon(self._draw_pending_widget)
 
     def _draw_pending_widget(self):
         self._draw_pending = False
-        if not self.finalized:
+        if self.finalized or self.bar._draw_queued:
+            return
+        if self.length != self._drawn_length:
+            self.bar.draw()
+        else:
             self.draw()
 
     def setup_hooks(self):

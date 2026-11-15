@@ -72,9 +72,9 @@ def test_hook_changed_length_redraws_bar():
     widget = _hooked_groupbox(length=60, drawn_length=50)
 
     widget._hook_response()
+    widget.qtile.run_iteration()
 
     assert widget.bar.draw.call_count == 1
-    assert widget.qtile.pending == []
     assert widget.draw.call_count == 0
 
 
@@ -87,6 +87,28 @@ def test_seven_hooks_in_one_iteration_draw_widget_once():
 
     assert widget.bar.draw.call_count == 0
     assert widget.draw.call_count == 1
+
+
+def test_seven_hooks_in_one_iteration_calculate_length_once():
+    widget = _hooked_groupbox(length=50, drawn_length=50)
+    widget.draw = Mock()
+
+    for _ in range(7):
+        widget._hook_response()
+    widget.qtile.run_iteration()
+
+    assert widget.calculate_length.call_count == 1
+
+
+def test_pending_draw_skipped_when_bar_draw_queued_meanwhile():
+    widget = _hooked_groupbox(length=50, drawn_length=50)
+
+    widget._hook_response()
+    widget.bar._draw_queued = True
+    widget.qtile.run_iteration()
+
+    assert widget.draw.call_count == 0
+    assert widget.bar.draw.call_count == 0
 
 
 def test_hook_while_bar_draw_queued_adds_no_widget_draw():

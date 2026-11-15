@@ -1,3 +1,7 @@
+import asyncio
+import threading
+from types import SimpleNamespace
+
 import pytest
 
 import libqtile.bar
@@ -5,6 +9,7 @@ import libqtile.config
 import libqtile.confreader
 import libqtile.layout
 import libqtile.widget
+from libqtile.widget.helpers.status_notifier.statusnotifier import StatusNotifierItem
 from test.helpers import Retry  # noqa: I001
 
 
@@ -245,3 +250,40 @@ def test_statusnotifier_icon_lookup_off_event_loop(manager_nospawn, sni_config, 
         widget.eval("(lambda w: [n for n, t in w._lookup_threads if t == w._loop_thread])(self)")
         == "[]"
     )
+
+
+def test_statusnotifier_slow_lookup_does_not_overwrite_newer_icon():
+    async def get_icon_theme_path():
+        return None
+
+    names = iter(["old", "new"])
+
+    async def get_icon_name():
+        return next(names)
+
+    old_started = threading.Event()
+    new_done = threading.Event()
+
+    def lookup(name):
+        if name == "old":
+            old_started.set()
+            new_done.wait(5)
+        return f"icon-{name}"
+
+    item = StatusNotifierItem(None, "service")
+    item.item = SimpleNamespace(
+        get_icon_name=get_icon_name, get_icon_theme_path=get_icon_theme_path
+    )
+    item._get_xdg_icon = lookup
+
+    async def run():
+        old = asyncio.create_task(item._get_local_icon(fallback=False))
+        while not old_started.is_set():
+            await asyncio.sleep(0)
+        await item._get_local_icon(fallback=False)
+        new_done.set()
+        await old
+
+    asyncio.run(run())
+
+    assert item.icon == "icon-new"
