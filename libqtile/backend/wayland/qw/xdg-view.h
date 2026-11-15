@@ -44,6 +44,8 @@ struct qw_xdg_view {
     struct wlr_xdg_toplevel_decoration_v1 *decoration;
 
     bool mapped; // Is the view currently mapped (visible)?
+
+    struct wl_listener scene_tree_destroy;
 };
 
 struct qw_xdg_popup {
