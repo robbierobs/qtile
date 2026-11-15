@@ -104,6 +104,27 @@ def clip_to_output(window, wmanager, index):
     window.clip_to(rect["x"], rect["y"], rect["width"], rect["height"])
 
 
+def paint_buffer_border(wmanager, name, width, height, border):
+    """Paint a QW_BORDER_BUFFER ring around the window; Python place() only makes rect borders."""
+    wid = window_by_name(wmanager.c, name).info()["id"]
+    wmanager.c.eval(
+        f"""
+import cairocffi
+from libqtile.backend.wayland._ffi import ffi, lib
+view = self.windows_map[{wid}]._ptr
+self._buffer_surface = cairocffi.ImageSurface(
+    cairocffi.FORMAT_ARGB32, {width + 2 * border}, {height + 2 * border}
+)
+borders = ffi.new("struct qw_border[1]")
+borders[0].type = lib.QW_BORDER_BUFFER
+borders[0].width = {border}
+addr = ffi.cast("uintptr_t", self._buffer_surface._pointer)
+borders[0].buffer.surface = ffi.cast("cairo_surface_t *", addr)
+lib.qw_view_paint_borders(view, borders, 1)
+"""
+    )
+
+
 def test_before_clip_hovers_on_both_outputs(wmanager, kind, x11_conn):
     """Before any clip_to, the pointer hovers the window on both outputs (baseline)."""
     name = open_window(wmanager, kind, x11_conn)
@@ -146,6 +167,24 @@ def test_clip_applies_to_borders(wmanager, kind, x11_conn):
     window = place_window(wmanager, name, (x, y, width, height), borderwidth=border)
     # The window's outer box is the content plus a border on each side: the left border
     # is inside the clip, the right border lies beyond the first output's edge.
+    left_border = (x + border // 2, MID_Y)
+    right_border = (x + border + width + border // 2, MID_Y)
+
+    assert hovered_at(wmanager, *right_border) == name
+
+    clip_to_output(window, wmanager, 0)
+
+    assert hovered_at(wmanager, *right_border) is None
+    assert hovered_at(wmanager, *left_border) == name
+
+
+def test_clip_applies_to_buffer_borders(wmanager, kind, x11_conn):
+    """C3: QW_BORDER_BUFFER rings are clipped like rect borders."""
+    name = open_window(wmanager, kind, x11_conn)
+    x, y, width, height = straddling_box(wmanager)
+    border = 20
+    window = place_window(wmanager, name, (x, y, width, height))
+    paint_buffer_border(wmanager, name, width, height, border)
     left_border = (x + border // 2, MID_Y)
     right_border = (x + border + width + border // 2, MID_Y)
 
