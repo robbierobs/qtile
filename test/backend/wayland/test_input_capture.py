@@ -267,6 +267,85 @@ def test_input_capture(wmanager, receiver, virtual_pointer, virtual_keyboard):
     assert receiver.lines("events") == []
 
 
+def test_input_capture_refused_activation(wmanager, receiver, virtual_pointer):
+    """A capture released in place does not activate again until the pointer moves away"""
+    width, height = set_right_barrier(wmanager)
+    middle = height // 2
+
+    def refuse(activation_id, y):
+        session_call(wmanager, f"release({activation_id})")
+        clear_capture_events(wmanager)
+        wmanager.c.eval(f"self.core.warp_pointer({width - 1}, {y})")
+
+    def push():
+        virtual_pointer.assert_ok("motion 20 0")
+
+    def wait_for_activation(activation_id):
+        @Retry(ignore_exceptions=(AssertionError, IndexError))
+        def wait():
+            assert capture_events(wmanager)[-1][:2] == ("activated", activation_id)
+
+        wait()
+
+    activate(wmanager, virtual_pointer, width, height)
+
+    # Pushing on against the barrier does nothing
+    refuse(1, middle)
+    push()
+    push()
+    assert capture_events(wmanager) == []
+
+    # Backing away from the barrier arms it again
+    virtual_pointer.assert_ok("motion -100 0")
+    virtual_pointer.assert_ok("motion 120 0")
+    wait_for_activation(2)
+
+    # So does sliding along it
+    refuse(2, middle)
+    push()
+    assert capture_events(wmanager) == []
+    virtual_pointer.assert_ok("motion 0 100")
+    assert capture_events(wmanager) == []
+    push()
+    wait_for_activation(3)
+
+    # And so does a new set of barriers
+    refuse(3, middle + 100)
+    push()
+    assert capture_events(wmanager) == []
+    set_right_barrier(wmanager)
+    push()
+    wait_for_activation(4)
+
+    # Only input from the four activations reached the receiver
+    session_call(wmanager, "release(4)")
+    wait_for_receiver_events(
+        receiver,
+        [
+            "start pointer 1",
+            "start keyboard 1",
+            "motion 20 0",
+            "stop keyboard",
+            "stop pointer",
+            "start pointer 2",
+            "start keyboard 2",
+            "motion 120 0",
+            "stop keyboard",
+            "stop pointer",
+            "start pointer 3",
+            "start keyboard 3",
+            "motion 20 0",
+            "stop keyboard",
+            "stop pointer",
+            "start pointer 4",
+            "start keyboard 4",
+            "motion 20 0",
+            "stop keyboard",
+            "stop pointer",
+        ],
+    )
+
+
 def test_input_capture_release_key(wmanager, receiver, virtual_pointer, virtual_keyboard):
     """The release key always ends a capture and disables the session"""
     width, height = set_right_barrier(wmanager)
