@@ -66,6 +66,16 @@ def on_output2(wmanager):
     return edge(wmanager) + 100, MID_Y
 
 
+def plain_box(wmanager):
+    """A window below the clipped one that also straddles the first output's edge."""
+    return edge(wmanager) - 50, 400, 200, 100
+
+
+def plain_points(wmanager):
+    """One point inside plain_box on each output."""
+    return (edge(wmanager) - 25, 450), (edge(wmanager) + 100, 450)
+
+
 def hovered_at(wmanager, x, y):
     """Name of the window the pointer hovers at (x, y), or None."""
     wmanager.c.eval("setattr(self, 'hovered_window', None)")
@@ -102,6 +112,27 @@ def place_window(wmanager, name, box, borderwidth=0):
 def clip_to_output(window, wmanager, index):
     rect = output_rect(wmanager, index)
     window.clip_to(rect["x"], rect["y"], rect["width"], rect["height"])
+
+
+def paint_buffer_border(wmanager, name, width, height, border):
+    """Paint a QW_BORDER_BUFFER ring around the window; Python place() only makes rect borders."""
+    wid = window_by_name(wmanager.c, name).info()["id"]
+    wmanager.c.eval(
+        f"""
+import cairocffi
+from libqtile.backend.wayland._ffi import ffi, lib
+view = self.windows_map[{wid}]._ptr
+self._buffer_surface = cairocffi.ImageSurface(
+    cairocffi.FORMAT_ARGB32, {width + 2 * border}, {height + 2 * border}
+)
+borders = ffi.new("struct qw_border[1]")
+borders[0].type = lib.QW_BORDER_BUFFER
+borders[0].width = {border}
+addr = ffi.cast("uintptr_t", self._buffer_surface._pointer)
+borders[0].buffer.surface = ffi.cast("cairo_surface_t *", addr)
+lib.qw_view_paint_borders(view, borders, 1)
+"""
+    )
 
 
 def test_before_clip_hovers_on_both_outputs(wmanager, kind, x11_conn):
@@ -157,6 +188,24 @@ def test_clip_applies_to_borders(wmanager, kind, x11_conn):
     assert hovered_at(wmanager, *left_border) == name
 
 
+def test_clip_applies_to_buffer_borders(wmanager, kind, x11_conn):
+    """C3: QW_BORDER_BUFFER rings are clipped like rect borders."""
+    name = open_window(wmanager, kind, x11_conn)
+    x, y, width, height = straddling_box(wmanager)
+    border = 20
+    window = place_window(wmanager, name, (x, y, width, height))
+    paint_buffer_border(wmanager, name, width, height, border)
+    left_border = (x + border // 2, MID_Y)
+    right_border = (x + border + width + border // 2, MID_Y)
+
+    assert hovered_at(wmanager, *right_border) == name
+
+    clip_to_output(window, wmanager, 0)
+
+    assert hovered_at(wmanager, *right_border) is None
+    assert hovered_at(wmanager, *left_border) == name
+
+
 def test_clip_outside_window_keeps_it_visible(wmanager, kind, x11_conn):
     """C5: an empty intersection draws nothing but leaves the window visible."""
     name = open_window(wmanager, kind, x11_conn)
@@ -194,15 +243,37 @@ def test_clip_on_hidden_window_then_kill(wmanager, kind, x11_conn, capfd):
 def test_unclipped_window_is_unaffected_by_clipping_another(wmanager, kind, x11_conn):
     """C6: a window that never calls clip_to reports the same info and hover results."""
     new_xdg_client(wmanager, PLAIN_NAME)
-    plain = place_window(wmanager, PLAIN_NAME, (100, 400, 200, 100))
+    plain = place_window(wmanager, PLAIN_NAME, plain_box(wmanager))
+    info_before = plain.info()
+    hover_before = [hovered_at(wmanager, *point) for point in plain_points(wmanager)]
+
     name = open_window(wmanager, kind, x11_conn)
     window = place_window(wmanager, name, straddling_box(wmanager))
-    info_before = plain.info()
-    inside_plain = (150, 450)
-    assert hovered_at(wmanager, *inside_plain) == PLAIN_NAME
-
     clip_to_output(window, wmanager, 0)
 
     assert plain.info() == info_before
-    assert hovered_at(wmanager, *inside_plain) == PLAIN_NAME
+    hover_after = [hovered_at(wmanager, *point) for point in plain_points(wmanager)]
+    assert hover_after == hover_before
+    assert hover_after == [PLAIN_NAME, PLAIN_NAME]
     assert hovered_at(wmanager, *on_output2(wmanager)) is None
+
+
+@pytest.mark.parametrize("kind", ["xwayland"])
+@pytest.mark.skipif(shutil.which("Xwayland") is None, reason="Xwayland is not installed")
+def test_xwayland_surface_is_clipped_only_while_clip_to_is_set(wmanager, kind, x11_conn):
+    """A fixed-size 400x300 XWayland surface in a 200x200 box draws past the box until clip_to."""
+    create_window(x11_conn, 400, 300, fixed_size=True)
+    wmanager.c.sync()
+    window = wait_for_window(wmanager, XWAYLAND_NAME)
+    window.place(100, 100, 200, 200, 0, None)
+    wmanager.c.sync()
+    beyond_box = (350, 150)
+
+    assert hovered_at(wmanager, *beyond_box) == XWAYLAND_NAME
+
+    clip_to_output(window, wmanager, 0)
+    assert hovered_at(wmanager, *beyond_box) is None
+
+    window.place(100, 100, 200, 200, 0, None)
+    wmanager.c.sync()
+    assert hovered_at(wmanager, *beyond_box) == XWAYLAND_NAME
