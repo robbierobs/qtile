@@ -275,21 +275,21 @@ static struct wlr_scene_node *qw_xwayland_view_get_tree_node(void *self) {
 
 // Clip the xwayland_view's scene tree if needed
 static void qw_xwayland_view_clip(struct qw_xwayland_view *xwayland_view) {
-    // Only clip if scene_tree exists, node is disabled, and node is linked
     if (!xwayland_view->scene_tree) {
         return;
     }
-    if (xwayland_view->scene_tree->node.enabled) {
+    if (!xwayland_view->scene_tree->node.enabled) {
         return;
     }
     if (!xwayland_view->scene_tree->node.link.next) {
         return;
     }
 
+    // XWayland subsurface tree origin is (0, 0); geom.x/y hold layout coords.
     // clang-format off
     struct wlr_box clip = {
-        .x = xwayland_view->geom.x,
-        .y = xwayland_view->geom.y,
+        .x = 0,
+        .y = 0,
         .width = xwayland_view->base.width,
         .height = xwayland_view->base.height
     };
