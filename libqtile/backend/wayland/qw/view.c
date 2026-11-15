@@ -1,10 +1,13 @@
 #include "view.h"
 #include "cairo-buffer.h"
+#include "cursor.h"
 #include "server.h"
 #include "util.h"
 #include <stdlib.h>
+#include <string.h>
 #include <wayland-util.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/util/box.h>
 
 // Frees all border rectangles and their associated scene nodes of the view.
 // Checks if borders exist, then destroys each of the 4 border scene nodes per border set.
@@ -175,6 +178,127 @@ void qw_view_move_down(struct qw_view *view) {
 
 bool qw_view_is_visible(struct qw_view *view) { return view->content_tree->node.enabled; }
 
+static void qw_view_clip_borders(struct qw_view *view) {
+    if (view->borders == NULL) {
+        return;
+    }
+
+    struct wlr_box local_clip = {
+        .x = view->clip_box.x - view->x,
+        .y = view->clip_box.y - view->y,
+        .width = view->clip_box.width,
+        .height = view->clip_box.height,
+    };
+
+    for (int i = 0; i < view->border_count; i++) {
+        for (int j = 0; j < 4; j++) {
+            struct wlr_box orig = view->borders[i].boxes[j];
+            struct wlr_box target = orig;
+            bool visible = !view->has_clip || wlr_box_intersection(&target, &orig, &local_clip);
+
+            if (view->borders[i].type == QW_BORDER_RECT) {
+                struct wlr_scene_rect *rect = view->borders[i].rects[j];
+                if (!rect) {
+                    continue;
+                }
+                wlr_scene_node_set_enabled(&rect->node, visible);
+                if (visible) {
+                    wlr_scene_node_set_position(&rect->node, target.x, target.y);
+                    wlr_scene_rect_set_size(rect, target.width, target.height);
+                }
+            } else if (view->borders[i].type == QW_BORDER_BUFFER) {
+                struct wlr_scene_buffer *buf = view->borders[i].scene_bufs[j];
+                if (!buf) {
+                    continue;
+                }
+                wlr_scene_node_set_enabled(&buf->node, visible);
+                if (visible) {
+                    wlr_scene_node_set_position(&buf->node, target.x, target.y);
+                    if (view->has_clip) {
+                        struct wlr_fbox src = {
+                            .x = target.x - orig.x,
+                            .y = target.y - orig.y,
+                            .width = target.width,
+                            .height = target.height,
+                        };
+                        wlr_scene_buffer_set_source_box(buf, &src);
+                        wlr_scene_buffer_set_dest_size(buf, target.width, target.height);
+                    } else {
+                        wlr_scene_buffer_set_source_box(buf, NULL);
+                        wlr_scene_buffer_set_dest_size(buf, 0, 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void qw_view_apply_surface_clip(struct qw_view *view, struct wlr_scene_tree *scene_tree,
+                                const struct wlr_box *own_clip) {
+    if (!scene_tree || !scene_tree->node.link.next) {
+        return;
+    }
+
+    if (!view->has_clip) {
+        wlr_scene_node_set_enabled(&scene_tree->node, true);
+        wlr_scene_subsurface_tree_set_clip(&scene_tree->node, own_clip);
+        return;
+    }
+
+    int total_border = 0;
+    for (int i = 0; i < view->border_count; i++) {
+        total_border += view->borders[i].width;
+    }
+
+    // Translate layout-space clip_box to root-surface coords:
+    // scene_tree is at (view->x + total_border, view->y + total_border), and
+    // own_clip->x/y is the root surface offset of the view's geometry origin.
+    struct wlr_box user_clip = {
+        .x = view->clip_box.x - (view->x + total_border) + own_clip->x,
+        .y = view->clip_box.y - (view->y + total_border) + own_clip->y,
+        .width = view->clip_box.width,
+        .height = view->clip_box.height,
+    };
+
+    struct wlr_box clip;
+    if (!wlr_box_intersection(&clip, own_clip, &user_clip)) {
+        wlr_scene_node_set_enabled(&scene_tree->node, false);
+        return;
+    }
+
+    wlr_scene_node_set_enabled(&scene_tree->node, true);
+    wlr_scene_subsurface_tree_set_clip(&scene_tree->node, &clip);
+}
+
+void qw_view_set_clip(struct qw_view *view, bool enabled, int x, int y, int width, int height) {
+    if (!view) {
+        return;
+    }
+    if (!enabled && !view->has_clip) {
+        return;
+    }
+
+    view->has_clip = enabled;
+    if (enabled) {
+        view->clip_box = (struct wlr_box){
+            .x = x,
+            .y = y,
+            .width = width,
+            .height = height,
+        };
+    } else {
+        view->clip_box = (struct wlr_box){0};
+    }
+
+    if (view->clip) {
+        view->clip(view);
+    }
+    qw_view_clip_borders(view);
+    if (view->server && view->server->cursor) {
+        qw_cursor_update_pointer_focus(view->server->cursor);
+    }
+}
+
 // Creates and paints multiple border layers around the view content.
 // borders: array of qw_border for each border.
 // border_count: number of border layers to draw.
@@ -220,6 +344,7 @@ void qw_view_paint_borders(struct qw_view *view, const struct qw_border *borders
             { coord, bw + coord, bw, outer_h - 2 * bw - coord * 2 },                // left
         };
         // clang-format on
+        memcpy(view->borders[i].boxes, sides, sizeof(sides));
 
         if (src->type == QW_BORDER_RECT) {
             for (int j = 0; j < 4; j++) {
@@ -255,6 +380,9 @@ void qw_view_paint_borders(struct qw_view *view, const struct qw_border *borders
     }
 
     wlr_scene_node_raise_to_top(tree_node);
+    if (view->has_clip) {
+        qw_view_clip_borders(view);
+    }
 }
 
 // Foreign toplevel manager requests
