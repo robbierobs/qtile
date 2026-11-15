@@ -254,6 +254,7 @@ class Base(base._Window):
 
         self.bordercolor = bordercolor
         self.borderwidth = borderwidth
+        lib.qw_view_set_clip(self._ptr, False, 0, 0, 0, 0)
         self._ptr.place(self._ptr, x, y, width, height, c_layers, n, int(above))
 
     @expose_command()
@@ -483,6 +484,11 @@ class Window(Base, base.Window):
     @expose_command()
     def is_visible(self) -> bool:
         return lib.qw_view_is_visible(self._ptr)
+
+    @expose_command()
+    def clip_to(self, x: int, y: int, width: int, height: int) -> None:
+        """Clip this window and its borders to a layout-coordinate rectangle."""
+        lib.qw_view_set_clip(self._ptr, True, int(x), int(y), int(width), int(height))
 
     @expose_command()
     def static(
@@ -973,6 +979,7 @@ class Static(Base, base.Static):
         self._height = height
 
         n = 0
+        lib.qw_view_set_clip(self._ptr, False, 0, 0, 0, 0)
         self._ptr.place(self._ptr, x, y, width, height, ffi.NULL, n, int(above))
 
     @expose_command()

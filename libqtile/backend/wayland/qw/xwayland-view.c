@@ -274,20 +274,11 @@ static struct wlr_scene_node *qw_xwayland_view_get_tree_node(void *self) {
 }
 
 // Clip the xwayland_view's scene tree if needed
-static void qw_xwayland_view_clip(struct qw_xwayland_view *xwayland_view) {
-    if (!xwayland_view->scene_tree) {
-        return;
-    }
-    if (!xwayland_view->scene_tree->node.enabled) {
-        return;
-    }
-    if (!xwayland_view->scene_tree->node.link.next) {
-        return;
-    }
-
+static void qw_xwayland_view_clip(void *self) {
+    struct qw_xwayland_view *xwayland_view = (struct qw_xwayland_view *)self;
     // XWayland subsurface tree origin is (0, 0); geom.x/y hold layout coords.
     // clang-format off
-    struct wlr_box clip = {
+    struct wlr_box own_clip = {
         .x = 0,
         .y = 0,
         .width = xwayland_view->base.width,
@@ -295,7 +286,7 @@ static void qw_xwayland_view_clip(struct qw_xwayland_view *xwayland_view) {
     };
     // clang-format on
 
-    wlr_scene_subsurface_tree_set_clip(&xwayland_view->scene_tree->node, &clip);
+    qw_view_apply_surface_clip(&xwayland_view->base, xwayland_view->scene_tree, &own_clip);
 }
 
 // Place the xwayland_view at given position and size with border and stacking info
@@ -644,6 +635,9 @@ static void qw_xwayland_view_handle_map(struct wl_listener *listener, void *data
     // Notify the server that this view is ready to be managed (added to layout/focus system).
     xwayland_view->base.server->manage_view_cb((struct qw_view *)&xwayland_view->base,
                                                xwayland_view->base.server->cb_data);
+    if (xwayland_view->base.has_clip) {
+        qw_xwayland_view_clip(xwayland_view);
+    }
 
     // TODO: move this up?
     //  Attach a listener to the surface's commit signal.
@@ -981,6 +975,7 @@ void qw_server_xwayland_view_new(struct qw_server *server,
     xwayland_view->base.update_minimized = qw_xwayland_view_update_minimized;
     xwayland_view->base.update_maximized = qw_xwayland_view_update_maximized;
     xwayland_view->base.update_fullscreen = qw_xwayland_view_update_fullscreen;
+    xwayland_view->base.clip = qw_xwayland_view_clip;
 
     xwayland_surface->data = xwayland_view;
 }
