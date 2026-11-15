@@ -199,3 +199,49 @@ def test_statusnotifier_decodes_icons_off_event_loop(manager_nospawn, sni_config
         )
 
     decoded()
+
+
+@pytest.mark.usefixtures("dbus")
+def test_statusnotifier_icon_lookup_off_event_loop(manager_nospawn, sni_config, tmp_path):
+    """Icon theme lookups run in a worker thread, and the icon still appears."""
+    # The test window exports no icon name, so the item is given one from hicolor
+    # and an empty icon theme directory: the custom lookup misses, the xdg one finds it
+    theme = tmp_path / "theme"
+    theme.mkdir()
+    manager_nospawn.start(sni_config)
+    widget = manager_nospawn.c.widget["statusnotifier"]
+    widget.eval(
+        "import threading\n"
+        "from libqtile.widget.helpers.status_notifier import statusnotifier as sn\n"
+        "self._loop_thread = threading.get_ident()\n"
+        "self._lookup_threads = []\n"
+        # eval's locals aren't visible inside the function, so pass them in
+        "def _recorder(name, orig, threads=self._lookup_threads, threading=threading):\n"
+        "    def record(item, *args):\n"
+        "        threads.append((name, threading.get_ident()))\n"
+        "        return orig(item, *args)\n"
+        "    return record\n"
+        "for name in ('_get_custom_icon', '_get_xdg_icon'):\n"
+        "    setattr(sn.StatusNotifierItem, name,"
+        " _recorder(name, getattr(sn.StatusNotifierItem, name)))\n"
+        "async def _named_icon(self, fallback=True, orig=sn.StatusNotifierItem._get_local_icon):\n"
+        "    async def get_icon_name():\n"
+        "        return 'account-apple'\n"
+        "    async def get_icon_theme_path():\n"
+        f"        return {str(theme)!r}\n"
+        "    self.item.get_icon_name = get_icon_name\n"
+        "    self.item.get_icon_theme_path = get_icon_theme_path\n"
+        "    return await orig(self, fallback=fallback)\n"
+        "sn.StatusNotifierItem._get_local_icon = _named_icon"
+    )
+
+    manager_nospawn.test_window("TestSNI", export_sni=True)
+    wait_for_icon(widget, hidden=False)
+
+    assert widget.eval("sorted({n for n, _ in self._lookup_threads})") == (
+        "['_get_custom_icon', '_get_xdg_icon']"
+    )
+    assert (
+        widget.eval("(lambda w: [n for n, t in w._lookup_threads if t == w._loop_thread])(self)")
+        == "[]"
+    )
