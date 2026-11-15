@@ -78,7 +78,6 @@ def plain_points(wmanager):
 
 def hovered_at(wmanager, x, y):
     """Name of the window the pointer hovers at (x, y), or None."""
-    wmanager.c.eval("setattr(self, 'hovered_window', None)")
     wmanager.backend.fake_motion(x, y)
     wmanager.c.sync()
     return ast.literal_eval(wmanager.c.eval(f"repr({HOVERED})"))
