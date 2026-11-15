@@ -142,3 +142,28 @@ def test_tiled_window_keeps_its_size(wmanager, x11_conn):
     event = wait_for_configure_notify(x11_conn)
     assert (event.width, event.height) == tiled_size
     assert_size(wmanager, x11_conn, wid, tiled_size)
+
+
+def test_view_drops_scene_tree_when_its_tree_dies(wmanager, x11_conn):
+    wid = create_window(x11_conn, 300, 200, fixed_size=False)
+    qtile_wid = Retry(ignore_exceptions=(KeyError,))(window_by_name)(wmanager.c, NAME).info()[
+        "id"
+    ]
+    wmanager.c.eval(f"setattr(self, '_view', self.windows_map[{qtile_wid}]._ptr)")
+
+    # get_tree_node is NULL exactly when the view's scene_tree is
+    tree_is_null = (
+        "self._view.get_tree_node(self._view)"
+        " == __import__('libqtile.backend.wayland._ffi', fromlist=['ffi']).ffi.NULL"
+    )
+    assert wmanager.c.eval(tree_is_null) == "False"
+
+    # Unmapping leaves the view struct alive but destroys its surface, and with it the tree
+    x11_conn.core.UnmapWindow(wid)
+    x11_conn.flush()
+
+    @Retry(ignore_exceptions=(AssertionError,))
+    def assert_tree_gone():
+        assert wmanager.c.eval(tree_is_null) == "True"
+
+    assert_tree_gone()

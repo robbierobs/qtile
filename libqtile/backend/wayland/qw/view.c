@@ -235,7 +235,7 @@ static void qw_view_clip_borders(struct qw_view *view) {
 
 void qw_view_apply_surface_clip(struct qw_view *view, struct wlr_scene_tree *scene_tree,
                                 const struct wlr_box *own_clip) {
-    if (!scene_tree || !scene_tree->node.link.next) {
+    if (!scene_tree) {
         return;
     }
 

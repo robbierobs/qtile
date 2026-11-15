@@ -144,6 +144,24 @@ only necessary to run one set locally to confirm the change is correct.
     this does not only include the functionality, but the style, typing
     annotations (if necessary) and documentation as well!
 
+Sanitizing the Wayland backend's C code
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To run the Wayland tests under AddressSanitizer and UndefinedBehaviorSanitizer, build the C
+objects and ``_ffi`` with ``--asan``, then preload the sanitizer runtimes (the leak check is
+off, because Python and wlroots are not instrumented):
+
+.. code-block:: bash
+
+    .venv/bin/python libqtile/backend/wayland/cffi/build.py --asan
+    env -u WAYLAND_DISPLAY -u DISPLAY \
+        LD_PRELOAD=/usr/lib64/libasan.so.8:/usr/lib64/libubsan.so.1 \
+        ASAN_OPTIONS=detect_leaks=0:log_path=<dir>/asan-report \
+        .venv/bin/python -m pytest --backend wayland -rs -q -p no:cacheprovider <test files>
+
+In a test run the reports appeared in pytest's output, not in the ``log_path`` file, so check
+both. Rebuild without ``--asan`` before running the normal tests.
+
 Writing migrations
 ------------------
 

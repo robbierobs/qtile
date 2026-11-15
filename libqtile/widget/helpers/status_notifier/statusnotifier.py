@@ -1,4 +1,4 @@
-from asyncio import current_task
+from asyncio import current_task, get_running_loop
 from collections.abc import Callable
 from contextlib import suppress
 from functools import partial
@@ -243,14 +243,21 @@ class StatusNotifierItem:  # noqa: E303
             except (AttributeError, DBusError):
                 icon_path = None
 
+            # The theme lookups walk directories, so they run off the event loop
+            loop = get_running_loop()
             icon = None
             if icon_path:
-                icon = self._get_custom_icon(icon_name, Path(icon_path))
+                icon = await loop.run_in_executor(
+                    None, self._get_custom_icon, icon_name, Path(icon_path)
+                )
 
-            if icon:
-                self.icon = icon
-            else:
-                self.icon = self._get_xdg_icon(icon_name)
+            if not icon:
+                icon = await loop.run_in_executor(None, self._get_xdg_icon, icon_name)
+
+            # Lookups can finish out of order: a superseded name must not overwrite the newer one
+            if icon_name != self.last_icon_name:
+                return
+            self.icon = icon
         else:
             self.icon = None
 

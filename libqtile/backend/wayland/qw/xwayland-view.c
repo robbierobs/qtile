@@ -575,15 +575,34 @@ static void qw_xwayland_view_handle_set_class(struct wl_listener *listener, void
     }
 }
 
+// wlroots destroys the subsurface tree with its surface, so clear the pointer then.
+static void qw_xwayland_view_handle_scene_tree_destroy(struct wl_listener *listener, void *data) {
+    UNUSED(data);
+    struct qw_xwayland_view *xwayland_view =
+        wl_container_of(listener, xwayland_view, scene_tree_destroy);
+    wl_list_remove(&xwayland_view->scene_tree_destroy.link);
+    xwayland_view->scene_tree = NULL;
+}
+
 // Called when the XWayland surface is mapped (i.e., ready to be shown).
 static void qw_xwayland_view_handle_map(struct wl_listener *listener, void *data) {
     UNUSED(data);
     struct qw_xwayland_view *xwayland_view = wl_container_of(listener, xwayland_view, map);
     struct wlr_xwayland_surface *xwayland_surface = xwayland_view->xwayland_surface;
 
+    // A remap leaves the old tree alive; unhook it so its destruction cannot clear the new one.
+    if (xwayland_view->scene_tree != NULL) {
+        wl_list_remove(&xwayland_view->scene_tree_destroy.link);
+    }
+
     // Create a subsurface tree for this view under the content tree.
     xwayland_view->scene_tree = wlr_scene_subsurface_tree_create(xwayland_view->base.content_tree,
                                                                  xwayland_surface->surface);
+    if (xwayland_view->scene_tree != NULL) {
+        xwayland_view->scene_tree_destroy.notify = qw_xwayland_view_handle_scene_tree_destroy;
+        wl_signal_add(&xwayland_view->scene_tree->node.events.destroy,
+                      &xwayland_view->scene_tree_destroy);
+    }
 
     // Mirror the surface into the view's private scene for per-window capture
     if (xwayland_view->base.image_capture_scene != NULL) {
