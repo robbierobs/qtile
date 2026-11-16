@@ -1,9 +1,12 @@
+#include <EGL/egl.h>
 #include <libinput.h>
 #include <stdlib.h>
 #include <wlr/backend/libinput.h>
 #include <wlr/backend/session.h>
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/interfaces/wlr_pointer.h>
+#include <wlr/render/egl.h>
+#include <wlr/render/gles2.h>
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 #include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_input_device.h>
@@ -320,6 +323,33 @@ static void qw_server_handle_output_manager_test(struct wl_listener *listener, v
     qw_server_output_manager_reconfigure(server, config, false);
 }
 
+static struct wlr_egl *qw_server_gles2_egl(struct qw_server *server) {
+    if (server->renderer == NULL || !wlr_renderer_is_gles2(server->renderer)) {
+        return NULL;
+    }
+    return wlr_gles2_renderer_get_egl(server->renderer);
+}
+
+// wlroots makes its EGL context current for each GL operation and restores the previous one
+// afterwards. With none current that restore releases the context, and the NVIDIA driver
+// busy-waits on every release. Holding the context current turns the restore into a re-bind.
+static void qw_server_hold_egl_context(struct qw_server *server) {
+    const char *hold = getenv("QTILE_WAYLAND_HOLD_EGL_CONTEXT");
+    struct wlr_egl *egl = qw_server_gles2_egl(server);
+    if (hold == NULL || hold[0] == '\0' || hold[0] == '0' || egl == NULL) {
+        return;
+    }
+    if (!eglMakeCurrent(wlr_egl_get_display(egl), EGL_NO_SURFACE, EGL_NO_SURFACE,
+                        wlr_egl_get_context(egl))) {
+        wlr_log(WLR_ERROR, "failed to hold the EGL context current");
+    }
+}
+
+bool qw_server_holds_egl_context(struct qw_server *server) {
+    struct wlr_egl *egl = qw_server_gles2_egl(server);
+    return egl != NULL && eglGetCurrentContext() == wlr_egl_get_context(egl);
+}
+
 // Handle wlr_renderer lost event caused by GPU resets or driver crashes.
 // Recreates renderer/allocator and reinitializes outputs to restore functionality.
 static void qw_server_handle_renderer_lost(struct wl_listener *listener, void *data) {
@@ -402,6 +432,8 @@ static void qw_server_handle_renderer_lost(struct wl_listener *listener, void *d
     // Clean up old renderer and allocator
     wlr_allocator_destroy(old_allocator);
     wlr_renderer_destroy(old_renderer);
+    // Destroying the old renderer leaves no context current
+    qw_server_hold_egl_context(server);
 
     wlr_log(WLR_INFO, "Successfully recovered from GPU reset");
 }
@@ -879,6 +911,7 @@ bool qw_server_init(struct qw_server *server) {
         wlr_log(WLR_ERROR, "failed to initialize wl_display");
         return false;
     }
+    qw_server_hold_egl_context(server);
 
     server->allocator = wlr_allocator_autocreate(server->backend, server->renderer);
     if (!server->allocator) {
