@@ -28,6 +28,15 @@ backend in your config as follows:
    elif qtile.core.name == "wayland":
        term = "foot"
 
+NVIDIA: holding the EGL context
+===============================
+
+With the GLES2 renderer, wlroots makes its EGL context current for every texture upload and
+render pass and releases it again afterwards. The NVIDIA driver busy-waits on each release,
+which shows up as short stalls of the whole compositor. Setting
+``QTILE_WAYLAND_HOLD_EGL_CONTEXT=1`` in Qtile's environment keeps the context current instead.
+It is off by default and has no effect with other renderers.
+
 Running X11-Only Programs
 =========================
 

@@ -338,6 +338,9 @@ xkb_keysym_t qw_server_get_sym_from_code(struct qw_server *server, int code);
 // Poll for server events (non-blocking)
 void qw_server_poll(struct qw_server *server);
 
+// Whether the renderer's EGL context is current (see QTILE_WAYLAND_HOLD_EGL_CONTEXT)
+bool qw_server_holds_egl_context(struct qw_server *server);
+
 // Clean up and free server resources
 void qw_server_finalize(struct qw_server *server);
 

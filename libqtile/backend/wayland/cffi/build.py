@@ -277,7 +277,7 @@ class BuildConfig:
                 str(QW_PATH),
                 str(QW_PROTO_OUT_PATH),
             ],
-            libraries=["wlroots-0.20", "wayland-server", "input", "cairo"],
+            libraries=["wlroots-0.20", "wayland-server", "input", "cairo", "EGL"],
             source_files=source_files,
             macros=macros,
         )
