@@ -98,6 +98,23 @@ def test_layer_bring_to_front(wmanager):
     assert window_by_name(wmanager.c, "one").layer() == lib.LAYER_BRINGTOFRONT
 
 
+@layers_config
+@pytest.mark.parametrize(
+    "state, layer",
+    [("toggle_fullscreen", lib.LAYER_FULLSCREEN), ("toggle_maximize", lib.LAYER_MAX)],
+)
+def test_layer_fullscreen_above_brought_to_front(wmanager, state, layer):
+    """A window going fullscreen/maximized is not left behind a bring-to-front window"""
+    wmanager.test_window("one")
+    wmanager.c.window.bring_to_front()
+    assert window_by_name(wmanager.c, "one").layer() == lib.LAYER_BRINGTOFRONT
+
+    wmanager.test_window("two")
+    getattr(window_by_name(wmanager.c, "two"), state)()
+    assert window_by_name(wmanager.c, "two").layer() == layer
+    assert window_by_name(wmanager.c, "one").layer() == lib.LAYER_LAYOUT
+
+
 # TODO: Add test for bring_front_click
 
 
