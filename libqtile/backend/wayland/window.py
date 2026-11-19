@@ -749,6 +749,22 @@ class Window(Base, base.Window):
                 self.group.mark_floating(self, False)
             hook.fire("float_change")
 
+    def _demote_brought_to_front(self) -> None:
+        """Return the group's other bring-to-front windows to their own layer.
+
+        LAYER_BRINGTOFRONT sits above LAYER_FULLSCREEN and LAYER_MAX, and nothing
+        else takes a window out of it (window activation and Super+click put
+        tiled windows there), so a window going fullscreen would sit behind them.
+        """
+        if not self.group:
+            return
+        for win in self.group.windows:
+            if win is self or not isinstance(win, Window) or not win._ptr:
+                continue
+            if win.layer() == lib.LAYER_BRINGTOFRONT:
+                win.reparent(win.get_new_layer(win._float_state))
+                win.move_to_top()
+
     def _update_fullscreen(self, do_full: bool, old_state: FloatStates) -> None:
         if not (do_full or old_state == FloatStates.FULLSCREEN):
             return
@@ -796,6 +812,8 @@ class Window(Base, base.Window):
             old_state = self._float_state
             self._float_state = new_float_state
             self.reparent(self.get_new_layer(new_float_state))
+            if new_float_state in (FloatStates.FULLSCREEN, FloatStates.MAXIMIZED):
+                self._demote_brought_to_front()
             if self.group:  # may be not, if it's called from hook
                 self.group.mark_floating(self, True)
             self._update_fullscreen(new_float_state == FloatStates.FULLSCREEN, old_state)
